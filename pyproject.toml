@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minicode-harness"
+version = "0.1.0"
+description = "A local general-purpose Coding Agent Harness for software repositories."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7,<14",
+    "prompt-toolkit>=3.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+swebench = [
+    "datasets>=2.19",
+    "swebench",
+]
+
+[project.scripts]
+minicode = "minicode_harness.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["minicode_harness*"]
+
+[tool.setuptools.package-data]
+"minicode_harness.tui_runtime" = [
+    "main.mjs",
+    "native/*/prebuilds/*/*.node",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
