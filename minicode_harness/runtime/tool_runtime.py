@@ -15,7 +15,6 @@ from pydantic import ValidationError
 
 from minicode_harness.context import (
     ContextObservation,
-    ProjectContextCache,
     RunState,
     build_observation,
 )
@@ -115,7 +114,6 @@ class ToolRuntime:
         execution_journal: ExecutionJournal | None,
         session_memory: ReplSessionMemory | None,
         artifact_dir: Path,
-        project_context_cache: ProjectContextCache,
         output_sink: OutputSink,
         initial_observations: list[ContextObservation],
         run_state: RunState,
@@ -138,7 +136,6 @@ class ToolRuntime:
         self.execution_journal = execution_journal
         self.session_memory = session_memory
         self.artifact_dir = artifact_dir
-        self.project_context_cache = project_context_cache
         self.output_sink = output_sink
         self.max_memory_topic_reads = max(0, max_memory_topic_reads)
         self.rollback_on_unfinished_stop = rollback_on_unfinished_stop
@@ -288,20 +285,6 @@ class ToolRuntime:
                 workspace_generation=workspace_generation,
             )
 
-            cached = self._project_cache_outcome(
-                step,
-                tool_call,
-                workspace_generation=workspace_generation,
-            )
-            if cached is not None:
-                self._record_command_attempt(
-                    tool_call,
-                    cached.observation,
-                    workspace_generation=workspace_generation,
-                )
-                self._record_memory_read(tool_call, cached.observation)
-                return cached
-
             expected_file_sha256, stale_write = self._prepare_write_freshness(
                 step,
                 tool_call,
@@ -416,7 +399,6 @@ class ToolRuntime:
                 artifact_path=observation.artifact_path,
                 write_strategy=write_strategy,
             )
-            self._save_project_cache(step, tool_call, result)
             return ToolExecutionOutcome(
                 observation=observation,
                 modified_files=modified_files_from_result(tool_call.name, result),
@@ -1254,79 +1236,6 @@ class ToolRuntime:
             source_tool_call_id=match.source_tool_call_id,
         )
         return ToolExecutionOutcome(observation=observation)
-
-    def _project_cache_outcome(
-        self,
-        step: int,
-        tool_call: NormalizedToolCall,
-        *,
-        workspace_generation: int,
-    ) -> ToolExecutionOutcome | None:
-        if not is_workspace_read(tool_call.name, tool_call.arguments):
-            return None
-        cached = self.project_context_cache.lookup_workspace_read(
-            workspace=self.workspace,
-            arguments=tool_call.arguments,
-        )
-        if cached is None:
-            return None
-        result = FileReadResult.model_validate(cached.result_payload)
-        observation, events = build_observation(
-            tool_call_id=tool_call.id,
-            tool_name=tool_call.name,
-            result=result,
-            artifact_dir=self.artifact_dir,
-        )
-        observation.metadata.update(
-            {
-                "status": "project_cache_hit",
-                "source_run_id": cached.run_id,
-                "freshness": "file_hash_match",
-                "content_sha256": cached.file_hash,
-            }
-        )
-        observation.summary = f"{observation.summary} Reused from project cache."
-        self._reuse_tracker.record(
-            tool_call,
-            observation,
-            workspace_generation=workspace_generation,
-        )
-        for event in events:
-            self.trace_writer.write_event(
-                "context_compressed",
-                step=step,
-                **event.model_dump(mode="json"),
-            )
-        self.trace_writer.write_event(
-            "tool_result",
-            step=step,
-            tool_call_id=tool_call.id,
-            tool=tool_call.name,
-            status="project_cache_hit",
-            source_run_id=cached.run_id,
-            freshness="file_hash_match",
-            truncated=observation.is_truncated,
-            preview=observation.output_preview,
-            artifact_path=observation.artifact_path,
-        )
-        return ToolExecutionOutcome(observation=observation)
-
-    def _save_project_cache(
-        self,
-        step: int,
-        tool_call: NormalizedToolCall,
-        result: Any,
-    ) -> None:
-        if is_workspace_read(tool_call.name, tool_call.arguments) and isinstance(
-            result, FileReadResult
-        ):
-            self.project_context_cache.save_workspace_read_result(
-                workspace=self.workspace,
-                run_id=self.run_id,
-                step=step,
-                tool_call=tool_call,
-                result=result,
-            )
 
     def _annotate_mutation_diff(
         self,

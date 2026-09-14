@@ -114,11 +114,11 @@ def test_read_is_allowed_again_after_source_result_leaves_visible_history(
 
     loop.run()
 
-    # The runtime reuse guard no longer blocks the call. The independent,
-    # freshness-validated project cache may still satisfy it without disk I/O.
-    assert calls == 1
+    # Once the original Tool Result leaves the visible history, Run-local reuse
+    # no longer applies and the file is read again from the current workspace.
+    assert calls == 2
     repeated = next(item for item in loop.observations if item.tool_call_id == "read_again")
-    assert repeated.metadata.get("status") == "project_cache_hit"
+    assert repeated.metadata.get("status") != "duplicate_reused"
     assert "line 1 needle" in repeated.content
 
 
@@ -618,7 +618,8 @@ def test_resume_uses_latest_workspace_generation_after_write_without_reread(
         enable_write=True,
         approval_client=StaticApprovalClient(ApprovalDecision.APPROVE),
     ).run()
-    checkpoint = CheckpointStore(trace_path.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
     assert max(
         int(item.metadata.get("workspace_generation") or 0)
@@ -648,7 +649,7 @@ def test_resume_uses_latest_workspace_generation_after_write_without_reread(
         initial_observations=list(checkpoint.recent_observations),
         initial_modified_files=list(checkpoint.modified_files),
         initial_run_state=checkpoint.run_state,
-        initial_message_history=list(checkpoint.message_history),
+        initial_message_history=checkpoint_store.load_history(checkpoint),
     )
 
     resumed_loop.run()

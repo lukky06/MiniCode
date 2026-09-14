@@ -7,6 +7,7 @@ provider-native canonical message history owned by ``UserTurnState``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 
 from minicode_harness.runtime import (
@@ -15,20 +16,13 @@ from minicode_harness.runtime import (
     build_stable_system_prefix,
 )
 
-from .prompt_cache import PromptSectionCache, content_hash
 from .token import estimate_tokens
 from .types import BuiltContext, ContextCompressionEvent, ContextSkill, TokenBudget
 
 
 PROMPT_BUILDER_VERSION = PROMPT_RUNTIME_VERSION
-SYSTEM_PREFIX_SECTION = "system_prefix"
-
-
 @dataclass(frozen=True)
 class PromptPrefixMetadata:
-    enabled: bool = False
-    hit: bool = False
-    key: str | None = None
     prefix_hash: str | None = None
     prefix_tokens: int = 0
 
@@ -41,16 +35,8 @@ class ContextBuilder:
     explicit tools and are intentionally not accepted here.
     """
 
-    def __init__(
-        self,
-        budget: TokenBudget | None = None,
-        *,
-        prompt_cache: PromptSectionCache | None = None,
-        prompt_cache_enabled: bool = True,
-    ) -> None:
+    def __init__(self, budget: TokenBudget | None = None) -> None:
         self.budget = budget or TokenBudget()
-        self.prompt_cache = prompt_cache
-        self.prompt_cache_enabled = prompt_cache_enabled
 
     def build(
         self,
@@ -69,7 +55,7 @@ class ContextBuilder:
     ) -> BuiltContext:
         """Build one bounded system message under the configured prompt budget."""
 
-        stable_prefix, prefix = self._stable_prefix_with_cache(
+        stable_prefix, prefix = self._stable_prefix(
             available_skills,
             repository_rules,
             long_term_context,
@@ -100,7 +86,7 @@ class ContextBuilder:
             system = _combine_system(compact_prefix, dynamic_suffix)
             messages = _system_messages(system)
             token_estimate = estimate_tokens(system)
-            prefix = _uncached_prefix(compact_prefix)
+            prefix = _prefix_metadata(compact_prefix)
             compression_events.append(
                 ContextCompressionEvent(
                     reason="system_prompt_soft_limit",
@@ -119,7 +105,7 @@ class ContextBuilder:
             )
             messages = _system_messages(minimal_system)
             token_estimate = estimate_tokens(minimal_system)
-            prefix = _uncached_prefix(minimal_system)
+            prefix = _prefix_metadata(minimal_system)
             compression_events.append(
                 ContextCompressionEvent(
                     reason="system_prompt_hard_limit",
@@ -133,14 +119,11 @@ class ContextBuilder:
             messages=messages,
             token_estimate=token_estimate,
             compression_events=compression_events,
-            prompt_cache_enabled=prefix.enabled,
-            prompt_cache_hit=prefix.hit,
-            prompt_cache_key=prefix.key,
             prompt_prefix_hash=prefix.prefix_hash,
             prompt_prefix_tokens=prefix.prefix_tokens,
         )
 
-    def _stable_prefix_with_cache(
+    def _stable_prefix(
         self,
         available_skills: list[ContextSkill],
         repository_rules: str,
@@ -154,32 +137,7 @@ class ContextBuilder:
             long_term_context=long_term_context,
             repository_structure_card=repository_structure_card,
         )
-        digest = content_hash(content)
-        if not self.prompt_cache_enabled or self.prompt_cache is None:
-            return content, PromptPrefixMetadata(
-                prefix_hash=digest,
-                prefix_tokens=estimate_tokens(content),
-            )
-
-        key = self.prompt_cache.system_prefix_key(
-            builder_version=PROMPT_BUILDER_VERSION,
-            section_name=SYSTEM_PREFIX_SECTION,
-            available_skills=available_skills,
-            long_term_context=long_term_context,
-            rendered_content_hash=digest,
-        )
-        lookup = self.prompt_cache.get_or_write(
-            key=key,
-            section_name=SYSTEM_PREFIX_SECTION,
-            content=content,
-        )
-        return lookup.entry.content, PromptPrefixMetadata(
-            enabled=True,
-            hit=lookup.hit,
-            key=lookup.entry.key,
-            prefix_hash=lookup.entry.content_hash,
-            prefix_tokens=lookup.entry.token_estimate,
-        )
+        return content, _prefix_metadata(content)
 
 
 def _combine_system(stable_prefix: str, dynamic_suffix: str) -> str:
@@ -212,9 +170,8 @@ def _clip(value: str, limit: int) -> str:
     return text[: max(0, limit - 24)].rstrip() + "\n...<system compacted>"
 
 
-def _uncached_prefix(content: str) -> PromptPrefixMetadata:
+def _prefix_metadata(content: str) -> PromptPrefixMetadata:
     return PromptPrefixMetadata(
-        enabled=False,
-        prefix_hash=content_hash(content),
+        prefix_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         prefix_tokens=estimate_tokens(content),
     )

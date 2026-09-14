@@ -295,9 +295,6 @@ function buildBackendArgs(options) {
   if (options.skillsEnabled === false) {
     args.push("--no-skills");
   }
-  if (options.promptCacheEnabled === false) {
-    args.push("--no-prompt-cache");
-  }
   if (options.repositoryMemoryEnabled === false) {
     args.push("--no-repository-memory");
   }
@@ -12615,7 +12612,6 @@ var UserInputOverlay = class {
 var MAX_VISIBLE_ENTRIES = 6;
 var SUCCESSFUL_TOOL_STATUSES = /* @__PURE__ */ new Set([
   "ok",
-  "project_cache_hit",
   "duplicate_reused",
   "background_started"
 ]);
@@ -13223,7 +13219,6 @@ var backend = new BackendClient({
   sandboxImage: process.env.MINICODE_TUI_SANDBOX_IMAGE,
   skills,
   skillsEnabled: process.env.MINICODE_TUI_NO_SKILLS !== "1",
-  promptCacheEnabled: process.env.MINICODE_TUI_NO_PROMPT_CACHE !== "1",
   repositoryMemoryEnabled: process.env.MINICODE_TUI_NO_REPOSITORY_MEMORY !== "1",
   subagentsEnabled: process.env.MINICODE_TUI_NO_SUBAGENTS !== "1",
   mcpConfig: process.env.MINICODE_TUI_MCP_CONFIG,

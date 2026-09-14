@@ -528,7 +528,6 @@ class BenchmarkScenarioTurnMetrics(BaseModel):
     read_tool_calls: int = 0
     unique_read_resources: int = 0
     repeated_read_calls: int = 0
-    project_cache_hit_count: int = 0
     memory_topic_read_count: int = 0
     unique_memory_topics: int = 0
     repeated_memory_topic_reads: int = 0

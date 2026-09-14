@@ -68,7 +68,6 @@ def _checkpoint(tmp_path) -> RunCheckpoint:
                 summary="Read README.",
             )
         ],
-        message_history=[{"role": "user", "content": "Explain README"}],
         user_turn_id="turn_1",
         model_call_count=2,
         workspace_digest=digest_workspace_files(workspace, ["README.md"]),
@@ -80,10 +79,13 @@ def test_checkpoint_store_saves_current_schema(tmp_path) -> None:
     store = CheckpointStore(tmp_path / "checkpoints")
     checkpoint = _checkpoint(tmp_path)
 
-    path = store.save(checkpoint)
+    history = [{"role": "user", "content": "Explain README"}]
+    path = store.save(checkpoint, message_history=history)
     loaded = store.load_latest()
 
+    assert path == store.latest_path
     assert path.is_file()
+    assert [item.name for item in store.checkpoints_dir.iterdir()] == ["latest.json"]
     assert loaded is not None
     assert loaded.run_state.inspected_files[0].path == "README.md"
     assert loaded.run_state.verification.status == "passed"
@@ -92,12 +94,17 @@ def test_checkpoint_store_saves_current_schema(tmp_path) -> None:
     assert loaded.task_state.tasks[0].status == "in_progress"
     assert loaded.user_turn_id == "turn_1"
     assert loaded.model_call_count == 2
+    assert loaded.history_length == 1
+    assert store.load_history(loaded) == history
     assert "llm_history_summary_calls" not in loaded.model_dump()
 
 
 def test_checkpoint_json_has_only_minimal_run_state(tmp_path) -> None:
     store = CheckpointStore(tmp_path / "checkpoints")
-    store.save(_checkpoint(tmp_path))
+    store.save(
+        _checkpoint(tmp_path),
+        message_history=[{"role": "user", "content": "Explain README"}],
+    )
     payload = json.loads(store.latest_path.read_text(encoding="utf-8"))
 
     assert "run_state" in payload
@@ -118,6 +125,8 @@ def test_checkpoint_json_has_only_minimal_run_state(tmp_path) -> None:
     }
     assert "observations" not in payload
     assert "current_plan" not in payload
+    assert "message_history" not in payload
+    assert payload["history_length"] == 1
 
 
 @pytest.mark.parametrize(
@@ -173,15 +182,18 @@ def test_checkpoint_preserves_current_tool_calls_without_rewriting(tmp_path) -> 
             ],
         }
     ]
+    store = CheckpointStore(tmp_path / "checkpoints")
     checkpoint = RunCheckpoint(
         run_id="run_20260711_001",
         step=1,
         task="current tools",
         workspace=str(workspace),
-        message_history=message_history,
     )
+    store.save(checkpoint, message_history=message_history)
+    loaded = store.load_latest()
 
-    assert checkpoint.message_history == message_history
+    assert loaded is not None
+    assert store.load_history(loaded) == message_history
 
 
 def test_workspace_conflict_detection_uses_current_digest(tmp_path) -> None:
@@ -192,3 +204,58 @@ def test_workspace_conflict_detection_uses_current_digest(tmp_path) -> None:
     (workspace / "README.md").write_text("changed\n", encoding="utf-8")
     conflicts = detect_workspace_conflicts(workspace, checkpoint)
     assert [conflict.path for conflict in conflicts] == ["README.md"]
+
+
+def test_checkpoint_externalizes_canonical_history(tmp_path) -> None:
+    store = CheckpointStore(tmp_path / "run" / "checkpoints")
+    checkpoint = RunCheckpoint(
+        run_id="run_20260711_001",
+        step=1,
+        task="resume later",
+        workspace=str(tmp_path),
+    )
+    history = [
+        {"role": "user", "content": "inspect README"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    store.save(checkpoint, message_history=history)
+    payload = json.loads(store.latest_path.read_text(encoding="utf-8"))
+    loaded = store.load_latest()
+
+    assert "message_history" not in payload
+    assert payload["history_length"] == 2
+    assert len(payload["history_sha256"]) == 64
+    assert store.history_path.is_file()
+    assert loaded is not None
+    assert store.load_history(loaded) == history
+
+
+def test_checkpoint_history_uses_checkpoint_prefix_after_newer_history_write(tmp_path) -> None:
+    store = CheckpointStore(tmp_path / "run" / "checkpoints")
+    checkpoint = RunCheckpoint(
+        run_id="run_20260711_001",
+        step=1,
+        task="resume later",
+        workspace=str(tmp_path),
+    )
+    original = [{"role": "user", "content": "first"}]
+    store.save(checkpoint, message_history=original)
+    checkpoint_payload = store.latest_path.read_text(encoding="utf-8")
+
+    store.save(
+        checkpoint.model_copy(update={"step": 2}),
+        message_history=[*original, {"role": "assistant", "content": "second"}],
+    )
+    store.latest_path.write_text(checkpoint_payload, encoding="utf-8")
+
+    loaded = store.load_latest()
+    assert loaded is not None
+    assert store.load_history(loaded) == original
+
+    store.history_path.write_text(
+        json.dumps([{"role": "user", "content": "mutated"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="history hash mismatch"):
+        store.load_history(loaded)

@@ -6,7 +6,6 @@ from minicode_harness.context import (
     ContextBuilder,
     ContextObservation,
     ContextSkill,
-    PromptSectionCache,
     RunState,
     TokenBudget,
     initialize_run_state,
@@ -64,7 +63,7 @@ def test_ascii_source_estimate_remains_close_to_four_characters_per_token() -> N
 
 
 def test_context_builder_renders_system_only_without_redundant_runtime_fields(tmp_path) -> None:
-    context = ContextBuilder(prompt_cache_enabled=False).build(
+    context = ContextBuilder().build(
         available_skills=[
             ContextSkill(
                 name="repo-explain",
@@ -101,7 +100,7 @@ def test_context_builder_renders_system_only_without_redundant_runtime_fields(tm
 
 def test_context_builder_guides_focused_dependency_search_and_verification() -> None:
     rendered = _rendered(
-        ContextBuilder(prompt_cache_enabled=False).build(available_skills=[])
+        ContextBuilder().build(available_skills=[])
     )
 
     assert "文件未知时在最窄目录做 Files Search" in rendered
@@ -127,7 +126,7 @@ def test_context_builder_guides_focused_dependency_search_and_verification() -> 
 
 
 def test_context_builder_adds_final_answer_boundary_only_for_streaming() -> None:
-    context = ContextBuilder(prompt_cache_enabled=False).build(
+    context = ContextBuilder().build(
         available_skills=[],
         streaming_enabled=True,
     )
@@ -161,36 +160,22 @@ def test_context_builder_rejects_removed_compatibility_arguments() -> None:
         )
 
 
-def test_context_builder_prompt_cache_reuses_stable_system_prefix(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    cache = PromptSectionCache(
-        workspace=workspace,
-        provider="test",
-        model="model",
-        data_dir=tmp_path / "data",
-    )
-    builder = ContextBuilder(prompt_cache=cache)
+def test_context_builder_exposes_stable_prefix_metadata() -> None:
+    builder = ContextBuilder()
 
     first = builder.build(available_skills=[], long_term_context="rule")
     second = builder.build(available_skills=[], long_term_context="rule")
 
-    assert first.prompt_cache_enabled is True
-    assert first.prompt_cache_hit is False
-    assert second.prompt_cache_hit is True
-    assert second.prompt_cache_key == first.prompt_cache_key
+    assert first.prompt_prefix_hash == second.prompt_prefix_hash
+    assert first.prompt_prefix_tokens == second.prompt_prefix_tokens
+    assert first.prompt_prefix_hash
+    assert first.prompt_prefix_tokens > 0
 
 
 def test_context_builder_omits_runtime_path_and_budgets_from_prompt(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    cache = PromptSectionCache(
-        workspace=workspace,
-        provider="test",
-        model="model",
-        data_dir=tmp_path / "data",
-    )
-    builder = ContextBuilder(prompt_cache=cache)
+    builder = ContextBuilder()
 
     first = builder.build(
         available_skills=[],
@@ -212,8 +197,6 @@ def test_context_builder_omits_runtime_path_and_budgets_from_prompt(tmp_path) ->
     assert "模型调用预算" not in _rendered(final)
     assert "工具调用预算" not in _rendered(first)
     assert "工具调用预算" not in _rendered(final)
-    assert final.prompt_cache_hit is True
-    assert final.prompt_cache_key == first.prompt_cache_key
     assert final.prompt_prefix_hash == first.prompt_prefix_hash
 
 
@@ -261,7 +244,7 @@ def test_token_budget_orders_soft_semantic_and_emergency_hard_limits() -> None:
 
 def test_context_builder_packs_large_optional_system_context(tmp_path) -> None:
     budget = TokenBudget(context_budget=400, reserved_output=100, soft_limit=0.5, hard_limit=0.8)
-    context = ContextBuilder(budget=budget, prompt_cache_enabled=False).build(
+    context = ContextBuilder(budget=budget).build(
         available_skills=[
             ContextSkill(name="large", description="skill detail\n" * 200, source="test")
         ],

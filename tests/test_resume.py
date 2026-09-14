@@ -229,7 +229,8 @@ def test_resume_restores_task_state_for_task_list(tmp_path) -> None:
         repository_memory_enabled=False,
     )
     run_path = run_store.path_for(session.run_id)
-    CheckpointStore(run_path / "checkpoints").save(
+    checkpoint_store = CheckpointStore(run_path / "checkpoints")
+    checkpoint_store.save(
         RunCheckpoint(
             run_id=session.run_id,
             step=1,
@@ -242,9 +243,9 @@ def test_resume_restores_task_state_for_task_list(tmp_path) -> None:
                     TaskRecord(id="2", subject="实现修复", status="in_progress"),
                 ],
             ),
-            message_history=[{"role": "user", "content": session.task}],
             status="running",
-        )
+        ),
+        message_history=[{"role": "user", "content": session.task}],
     )
     client = ScriptedModelClient(
         [
@@ -274,35 +275,6 @@ def test_resume_restores_task_state_for_task_list(tmp_path) -> None:
         ["1", "completed", "定位问题"],
         ["2", "in_progress", "实现修复"],
     ]
-
-
-def test_resume_preserves_prompt_cache_setting_from_session(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    run_store = RunStore(tmp_path / "runs")
-    session = run_store.create_run(
-        task="task",
-        workspace=workspace,
-        run_id="run_20260701_001",
-        prompt_cache_enabled=False,
-        repository_memory_enabled=False,
-    )
-    run_path = run_store.path_for(session.run_id)
-
-    result = resume_run(
-        session.run_id,
-        run_store=run_store,
-        model_client=ScriptedModelClient([ModelResponse(final_text="resumed")]),
-        memory_store=ProjectMemoryStore(tmp_path / "memory"),
-    )
-
-    assert result.status == "completed"
-    events = [
-        json.loads(line)
-        for line in (run_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    context_event = [event for event in events if event["type"] == "context_built"][0]
-    assert context_event["prompt_cache_enabled"] is False
 
 
 def test_resume_restores_pending_approval_and_continues(tmp_path) -> None:
@@ -499,14 +471,15 @@ def test_resume_approve_consumes_one_steering_after_restored_tool_batch(
         "content": "first resumed correction",
     }
     assert len(queue) == 1
-    latest = CheckpointStore(
+    checkpoint_store = CheckpointStore(
         run_store.path_for(result.run_id) / "checkpoints"
-    ).load_latest()
+    )
+    latest = checkpoint_store.load_latest()
     assert latest is not None
     assert {
         "role": "user",
         "content": "first resumed correction",
-    } in latest.message_history
+    } in checkpoint_store.load_history(latest)
     persisted = session_store.load(
         session.workspace,
         session.conversation_session_id,
@@ -530,14 +503,15 @@ def test_resume_reject_consumes_one_steering_after_restored_tool_batch(
         "content": "first resumed correction",
     }
     assert len(queue) == 1
-    latest = CheckpointStore(
+    checkpoint_store = CheckpointStore(
         run_store.path_for(result.run_id) / "checkpoints"
-    ).load_latest()
+    )
+    latest = checkpoint_store.load_latest()
     assert latest is not None
     assert {
         "role": "user",
         "content": "first resumed correction",
-    } in latest.message_history
+    } in checkpoint_store.load_history(latest)
     persisted = session_store.load(
         session.workspace,
         session.conversation_session_id,
@@ -584,9 +558,9 @@ def test_resume_syncs_canonical_history_to_original_conversation_session(tmp_pat
             step=1,
             task=run.task,
             workspace=run.workspace,
-            message_history=full_history,
             status="running",
-        )
+        ),
+        message_history=full_history,
     )
 
     result = resume_run(
@@ -647,37 +621,38 @@ def test_resume_after_read_fault_keeps_unconsumed_tool_result_visible(tmp_path) 
     checkpoint_store = CheckpointStore(
         run_store.path_for(session.run_id) / "checkpoints"
     )
+    history = [
+        {"role": "user", "content": session.task},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "read_before_fault",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": '{"source":"workspace","target":"source.py"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_before_fault",
+            "content": "critical evidence: VALUE = 42",
+        },
+    ]
     checkpoint_store.save(
         RunCheckpoint(
             run_id=session.run_id,
             step=1,
             task=session.task,
             workspace=session.workspace,
-            message_history=[
-                {"role": "user", "content": session.task},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "read_before_fault",
-                            "type": "function",
-                            "function": {
-                                "name": "read",
-                                "arguments": '{"source":"workspace","target":"source.py"}',
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "read_before_fault",
-                    "content": "critical evidence: VALUE = 42",
-                },
-            ],
             tool_calls=1,
             status="running",
-        )
+        ),
+        message_history=history,
     )
     client = ScriptedModelClient([ModelResponse(final_text="resumed from evidence")])
 
@@ -710,28 +685,29 @@ def test_resume_after_write_fault_preserves_modified_file_state(tmp_path) -> Non
     checkpoint_store = CheckpointStore(
         run_store.path_for(session.run_id) / "checkpoints"
     )
+    history = [
+        {"role": "user", "content": session.task},
+        {
+            "role": "assistant",
+            "content": (
+                "[MiniCode compacted execution]\n"
+                "- write | source.py\n"
+                "  status: passed"
+            ),
+        },
+    ]
     checkpoint_store.save(
         RunCheckpoint(
             run_id=session.run_id,
             step=2,
             task=session.task,
             workspace=session.workspace,
-            message_history=[
-                {"role": "user", "content": session.task},
-                {
-                    "role": "assistant",
-                    "content": (
-                        "[MiniCode compacted execution]\n"
-                        "- write | source.py\n"
-                        "  status: passed"
-                    ),
-                },
-            ],
             modified_files=["source.py"],
             workspace_digest=digest_workspace_files(workspace, ["source.py"]),
             tool_calls=1,
             status="running",
-        )
+        ),
+        message_history=history,
     )
 
     result = resume_run(
@@ -764,25 +740,25 @@ def test_resume_after_verification_fault_preserves_command_and_result(tmp_path) 
         run_store.path_for(session.run_id) / "checkpoints"
     )
     command = "python -m pytest -q tests/test_source.py"
+    history = [
+        {
+            "role": "assistant",
+            "content": (
+                "[MiniCode compacted execution]\n"
+                f"- run_command | {command}\n"
+                "  status: failed\n"
+                "  returncode: 1\n"
+                "  result: assertion VALUE == 43 failed"
+            ),
+        },
+        {"role": "user", "content": session.task},
+    ]
     checkpoint_store.save(
         RunCheckpoint(
             run_id=session.run_id,
             step=3,
             task=session.task,
             workspace=session.workspace,
-            message_history=[
-                {
-                    "role": "assistant",
-                    "content": (
-                        "[MiniCode compacted execution]\n"
-                        f"- run_command | {command}\n"
-                        "  status: failed\n"
-                        "  returncode: 1\n"
-                        "  result: assertion VALUE == 43 failed"
-                    ),
-                },
-                {"role": "user", "content": session.task},
-            ],
             run_state=RunState(
                 verification=VerificationState(
                     status="failed",
@@ -792,7 +768,8 @@ def test_resume_after_verification_fault_preserves_command_and_result(tmp_path) 
             ),
             tool_calls=1,
             status="running",
-        )
+        ),
+        message_history=history,
     )
     client = ScriptedModelClient([ModelResponse(final_text="failure evidence retained")])
 

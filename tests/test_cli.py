@@ -14,7 +14,6 @@ from minicode_harness.cli import (
     _main_help,
     _parse_interactive_task_args,
     _resolve_mcp_config,
-    _resolve_prompt_cache_enabled,
     app,
 )
 from minicode_harness.state import ReplSessionStore
@@ -207,7 +206,6 @@ def test_exec_command_creates_standalone_run_before_agent_loop(tmp_path, monkeyp
     assert session_json["task"] == "noop"
     assert session_json["workspace"] == str(tmp_path.resolve())
     assert session_json["conversation_session_id"] is None
-    assert session_json["prompt_cache_enabled"] is True
     assert session_json["collaboration_mode"] == "default"
     assert session_json["repository_memory_enabled"] is True
     assert session_json["subagents_enabled"] is True
@@ -224,7 +222,6 @@ def test_exec_command_creates_standalone_run_before_agent_loop(tmp_path, monkeyp
     assert trace_event["model"] is None
     assert trace_event["dry_run"] is True
     assert trace_event["collaboration_mode"] == "default"
-    assert trace_event["prompt_cache_enabled"] is True
     assert trace_event["repository_memory_enabled"] is True
     assert trace_event["context_architecture"] == "canonical_messages"
     assert trace_event["subagents_enabled"] is True
@@ -372,24 +369,6 @@ def test_removed_readonly_subagent_flags_are_rejected(tmp_path, monkeypatch) -> 
     assert not list((minicode_home / "runs").glob("run_*"))
 
 
-def test_exec_command_can_disable_prompt_cache(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    minicode_home = tmp_path.parent / f"{tmp_path.name}-minicode-home"
-    monkeypatch.setenv("MINICODE_HOME", str(minicode_home))
-
-    result = runner.invoke(
-        app,
-        ["exec", "noop", "--workspace", ".", "--dry-run", "--no-prompt-cache"],
-    )
-
-    assert result.exit_code == 0
-    run_dir = _only_standalone_run(minicode_home)
-    session_json = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    trace_event = json.loads((run_dir / "trace.jsonl").read_text(encoding="utf-8"))
-    assert session_json["prompt_cache_enabled"] is False
-    assert trace_event["prompt_cache_enabled"] is False
-
-
 def test_mcp_config_resolution_uses_explicit_path_then_environment(tmp_path, monkeypatch) -> None:
     explicit = tmp_path / "explicit.json"
     configured = tmp_path / "configured.json"
@@ -397,13 +376,6 @@ def test_mcp_config_resolution_uses_explicit_path_then_environment(tmp_path, mon
 
     assert _resolve_mcp_config(explicit) == explicit.resolve()
     assert _resolve_mcp_config(None) == configured.resolve()
-
-
-def test_prompt_cache_environment_opt_out(monkeypatch) -> None:
-    assert _resolve_prompt_cache_enabled(False) is True
-    monkeypatch.setenv("MINICODE_PROMPT_CACHE", "0")
-    assert _resolve_prompt_cache_enabled(False) is False
-    assert _resolve_prompt_cache_enabled(True) is False
 
 
 def test_interactive_task_parser_accepts_options_before_and_after_task() -> None:
@@ -634,7 +606,6 @@ def test_bench_run_command_invokes_runner(monkeypatch) -> None:
     assert calls["config"].max_steps == 20
     assert calls["config"].max_tool_calls == 30
     assert calls["config"].enable_subagents is False
-    assert calls["config"].prompt_cache_enabled is True
     assert Path(calls["suite"]).as_posix() == "benchmarks/suites/basic-java"
     assert Path(calls["output"]).as_posix() == "runs/bench_demo"
 
@@ -763,38 +734,3 @@ def test_bench_run_uses_minicode_environment_defaults(monkeypatch) -> None:
     assert result.exit_code == 0
     assert calls["config"].provider == "ollama"
     assert calls["config"].model == "qwen2.5-coder"
-
-
-def test_bench_run_can_disable_prompt_cache(monkeypatch) -> None:
-    calls = {}
-
-    class FakeBenchmarkRunner:
-        def __init__(self, config) -> None:
-            calls["config"] = config
-
-        def run_suite(self, suite, output):
-            return BenchmarkSummary(
-                suite="basic-java",
-                total_tasks=1,
-                resolved=1,
-                failed=0,
-                resolve_rate=1.0,
-                by_category={},
-                avg_steps=1.0,
-                avg_tool_calls=1.0,
-                avg_context_tokens=100.0,
-                compression_count=0,
-                checkpoint_count=1,
-                elapsed_seconds=1.0,
-                tasks=[],
-            )
-
-    monkeypatch.setattr("minicode_harness.cli.BenchmarkRunner", FakeBenchmarkRunner)
-
-    result = runner.invoke(
-        app,
-        ["bench", "run", "benchmarks/suites/basic-java", "--no-prompt-cache"],
-    )
-
-    assert result.exit_code == 0
-    assert calls["config"].prompt_cache_enabled is False

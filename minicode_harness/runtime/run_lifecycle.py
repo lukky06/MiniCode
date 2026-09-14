@@ -89,7 +89,6 @@ class RunLifecycle:
             run_state=snapshot.run_state,
             task_state=snapshot.task_state,
             recent_observations=snapshot.observations[-MAX_CHECKPOINT_OBSERVATIONS:],
-            message_history=snapshot.messages,
             compaction_state=snapshot.compaction_state,
             user_turn_id=snapshot.user_turn_id,
             model_call_count=snapshot.model_call_count,
@@ -104,7 +103,10 @@ class RunLifecycle:
             status=status,
             reason=reason,
         )
-        path = self.checkpoint_store.save(checkpoint)
+        path = self.checkpoint_store.save(
+            checkpoint,
+            message_history=snapshot.messages,
+        )
         self.trace_writer.write_event(
             "checkpoint_saved",
             step=snapshot.step,

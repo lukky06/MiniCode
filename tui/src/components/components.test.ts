@@ -95,7 +95,7 @@ test("activity mutates from working to worked without creating a second componen
   const activity = new Activity();
 
   activity.start("read_1", "Explore", "loop.py");
-  activity.finish("read_1", "project_cache_hit");
+  activity.finish("read_1", "duplicate_reused");
   activity.start("edit_1", "Change", "app.ts");
   const running = activity.render(48).join("\n");
   assert.match(running, /Working/);

@@ -1,8 +1,7 @@
 """Shared Harness storage paths and workspace identities.
 
-This module is neutral infrastructure used by context, memory, state, and
-prompt-cache modules. It prevents context caches from depending on a memory
-store merely to resolve the Harness data directory or a workspace key.
+This module is neutral infrastructure used by context, memory, and state
+modules. It keeps shared storage paths independent from repository memory.
 """
 
 from __future__ import annotations

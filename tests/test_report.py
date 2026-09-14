@@ -49,9 +49,6 @@ def test_format_trace_and_generate_report(tmp_path: Path) -> None:
         },
         reactive_compaction_count=0,
         token_estimator_version="mixed-language-v1",
-        prompt_cache_enabled=True,
-        prompt_cache_hit=True,
-        prompt_cache_key="abc",
         prompt_prefix_hash="def",
         prompt_prefix_tokens=80,
     )
@@ -120,7 +117,7 @@ def test_format_trace_and_generate_report(tmp_path: Path) -> None:
         step=2,
         tool_call_id="call_2",
         tool="read",
-        status="project_cache_hit",
+        status="ok",
     )
     writer.write_event(
         "approval_resolved",
@@ -170,7 +167,6 @@ def test_format_trace_and_generate_report(tmp_path: Path) -> None:
     assert metrics.artifact_read_calls == 0
     assert metrics.unique_read_resources == 1
     assert metrics.repeated_read_calls == 0
-    assert metrics.project_cache_hit_count == 1
     assert metrics.context_window == 32_000
     assert metrics.prompt_budget == 28_000
     assert metrics.reserved_output == 4_000
@@ -198,7 +194,6 @@ def test_format_trace_and_generate_report(tmp_path: Path) -> None:
     assert "- artifact reads: 0" in report_text
     assert "- unique read resources: 1" in report_text
     assert "- repeated read calls: 0" in report_text
-    assert "- project cache hits: 1" in report_text
     assert "- context window: 32000" in report_text
     assert "- prompt budget: 28000" in report_text
     assert "- reserved output: 4000" in report_text
@@ -216,8 +211,6 @@ def test_format_trace_and_generate_report(tmp_path: Path) -> None:
     assert "LLM history summary" not in report_text
     assert "- history compaction tokens removed: 800" in report_text
     assert "- history compaction tokens retained: 120" in report_text
-    assert "- Prompt Cache Enabled Contexts: 1" in report_text
-    assert "- Harness Prompt Cache Hits: 1/1" in report_text
     assert "- Provider Cached Input Tokens: 64" in report_text
     assert "- Provider Cache Miss Input Tokens: 56" in report_text
     assert "- `README.md`" in report_text

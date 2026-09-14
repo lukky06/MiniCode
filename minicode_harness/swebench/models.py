@@ -192,7 +192,6 @@ class SweBenchSuiteSummary(BaseModel):
     avg_evaluation_seconds: float = 0.0
     avg_context_tokens: float = 0.0
     repeated_read_calls: int = 0
-    project_cache_hits: int = 0
     verification_commands: int = 0
     command_policy_rejections: int = 0
     context_compactions: int = 0

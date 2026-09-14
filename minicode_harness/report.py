@@ -31,7 +31,6 @@ class ContextMetrics:
     text_search_calls: int
     unique_read_resources: int
     repeated_read_calls: int
-    project_cache_hit_count: int
     context_token_estimate_avg: int
     context_token_estimate_max: int
     context_window: int
@@ -41,7 +40,6 @@ class ContextMetrics:
     budget_usage_ratio_max: float
     history_groups_compacted: int
     token_estimator_version: str
-    prompt_cache_hit_count: int
     model_retry_count: int
     reactive_compaction_count: int
     provider_overflow_count: int
@@ -265,9 +263,6 @@ def collect_context_metrics(
         ),
         unique_read_resources=unique_read_resources,
         repeated_read_calls=max(0, len(read_fingerprints) - unique_read_resources),
-        project_cache_hit_count=sum(
-            1 for event in tool_results if event.get("status") == "project_cache_hit"
-        ),
         context_token_estimate_avg=(
             int(sum(token_estimates) / len(token_estimates)) if token_estimates else 0
         ),
@@ -289,9 +284,6 @@ def collect_context_metrics(
         ),
         token_estimator_version=str(
             latest_context.get("token_estimator_version") or "unknown"
-        ),
-        prompt_cache_hit_count=sum(
-            1 for event in context_events if event.get("prompt_cache_hit") is True
         ),
         model_retry_count=sum(
             1 for event in events if event.get("type") == "model_retry_scheduled"
@@ -584,15 +576,10 @@ def _commands_run(events: list[dict[str, Any]]) -> list[str]:
 
 
 def _prompt_cache_lines(events: list[dict[str, Any]]) -> list[str]:
-    context_events = [event for event in events if event.get("type") == "context_built"]
     model_events = [event for event in events if event.get("type") == "model_response"]
-    if not context_events and not model_events:
+    if not model_events:
         return []
 
-    enabled_contexts = [
-        event for event in context_events if event.get("prompt_cache_enabled") is True
-    ]
-    harness_hits = sum(1 for event in enabled_contexts if event.get("prompt_cache_hit") is True)
     provider_cached_tokens = sum(
         int((event.get("usage") or {}).get("cached_input_tokens") or 0)
         for event in model_events
@@ -603,13 +590,6 @@ def _prompt_cache_lines(events: list[dict[str, Any]]) -> list[str]:
     )
 
     lines: list[str] = []
-    if enabled_contexts:
-        lines.extend(
-            [
-                f"- Prompt Cache Enabled Contexts: {len(enabled_contexts)}",
-                f"- Harness Prompt Cache Hits: {harness_hits}/{len(enabled_contexts)}",
-            ]
-        )
     if provider_cached_tokens or provider_miss_tokens:
         lines.extend(
             [
@@ -628,7 +608,6 @@ def _context_metrics_lines(metrics: ContextMetrics) -> list[str]:
         f"- text searches: {metrics.text_search_calls}",
         f"- unique read resources: {metrics.unique_read_resources}",
         f"- repeated read calls: {metrics.repeated_read_calls}",
-        f"- project cache hits: {metrics.project_cache_hit_count}",
         f"- avg prompt tokens: {metrics.context_token_estimate_avg}",
         f"- max prompt tokens: {metrics.context_token_estimate_max}",
         f"- context window: {metrics.context_window}",
@@ -638,7 +617,6 @@ def _context_metrics_lines(metrics: ContextMetrics) -> list[str]:
         f"- max prompt budget usage: {metrics.budget_usage_ratio_max:.3f}",
         f"- history groups compacted: {metrics.history_groups_compacted}",
         f"- token estimator: {metrics.token_estimator_version}",
-        f"- prompt cache hits: {metrics.prompt_cache_hit_count}",
         f"- model retries: {metrics.model_retry_count}",
         f"- reactive compactions: {metrics.reactive_compaction_count}",
         f"- provider overflows: {metrics.provider_overflow_count}",

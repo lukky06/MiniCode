@@ -23,7 +23,6 @@ export interface BackendClientOptions {
   collaborationMode?: "default" | "plan";
   skills?: string[];
   skillsEnabled?: boolean;
-  promptCacheEnabled?: boolean;
   projectConventionsEnabled?: boolean;
   subagentsEnabled?: boolean;
   mcpConfig?: string;
@@ -138,9 +137,6 @@ export function buildBackendArgs(options: BackendClientOptions): string[] {
   }
   if (options.skillsEnabled === false) {
     args.push("--no-skills");
-  }
-  if (options.promptCacheEnabled === false) {
-    args.push("--no-prompt-cache");
   }
   if (options.projectConventionsEnabled === false) {
     args.push("--no-project-conventions");

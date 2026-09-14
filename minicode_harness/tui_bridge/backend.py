@@ -379,7 +379,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--skill", action="append", default=None)
     parser.add_argument("--no-skills", action="store_true")
-    parser.add_argument("--no-prompt-cache", action="store_true")
     parser.add_argument("--no-repository-memory", action="store_true")
     parser.add_argument("--no-subagents", action="store_true")
     parser.add_argument("--mcp-config", type=Path)
@@ -447,7 +446,6 @@ def _build_backend(
             collaboration_mode=session_settings.collaboration_mode,
             skills=args.skill,
             skills_enabled=not args.no_skills,
-            prompt_cache_enabled=not args.no_prompt_cache,
             repository_memory_enabled=not args.no_repository_memory,
             subagents_enabled=not args.no_subagents,
             mcp_config=args.mcp_config,
@@ -464,7 +462,6 @@ def _build_backend(
         sandbox_mode=SandboxMode(args.sandbox_mode),
         sandbox_image=args.sandbox_image,
         session_settings=session_settings,
-        prompt_cache_enabled=not args.no_prompt_cache,
         repository_memory_enabled=not args.no_repository_memory,
         subagents_enabled=not args.no_subagents,
         mcp_config=args.mcp_config,

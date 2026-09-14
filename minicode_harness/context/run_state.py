@@ -80,7 +80,7 @@ def record_inspected_file(
     """Record the strongest freshness-scoped read coverage for one file."""
 
     status = str(observation.metadata.get("status", "ok"))
-    if status not in {"ok", "project_cache_hit"}:
+    if status != "ok":
         return
     if not (
         is_workspace_read(tool_name, arguments)

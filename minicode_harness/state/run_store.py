@@ -45,7 +45,6 @@ class RunSession(BaseModel):
     collaboration_mode: str = "default"
     skills: str | None = None
     no_skills: bool = False
-    prompt_cache_enabled: bool = True
     repository_memory_enabled: bool = True
     mcp_config: str | None = None
     subagents_enabled: bool = True
@@ -133,7 +132,6 @@ class RunStore:
         collaboration_mode: str = "default",
         skills: str | None = None,
         no_skills: bool = False,
-        prompt_cache_enabled: bool = True,
         repository_memory_enabled: bool = True,
         mcp_config: str | None = None,
         subagents_enabled: bool = True,
@@ -165,7 +163,6 @@ class RunStore:
             collaboration_mode=collaboration_mode,
             skills=skills,
             no_skills=no_skills,
-            prompt_cache_enabled=prompt_cache_enabled,
             repository_memory_enabled=repository_memory_enabled,
             mcp_config=mcp_config,
             subagents_enabled=subagents_enabled,

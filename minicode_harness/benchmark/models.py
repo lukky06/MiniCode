@@ -121,7 +121,6 @@ class BenchmarkTaskResult(BaseModel):
     read_tool_calls: int = 0
     unique_read_resources: int = 0
     repeated_read_calls: int = 0
-    project_cache_hit_count: int = 0
     model_retry_count: int = 0
     reactive_compaction_count: int = 0
     output_recovery_count: int = 0
@@ -167,7 +166,6 @@ class BenchmarkSummary(BaseModel):
     read_tool_calls: int = 0
     unique_read_resources: int = 0
     repeated_read_calls: int = 0
-    project_cache_hit_count: int = 0
     model_retry_count: int = 0
     reactive_compaction_count: int = 0
     output_recovery_count: int = 0

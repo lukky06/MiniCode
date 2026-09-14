@@ -89,7 +89,6 @@ class TerminalContext:
     provider: str
     model: str | None
     write_enabled: bool
-    prompt_cache_enabled: bool
     repository_memory_enabled: bool
     subagents_enabled: bool
     mcp_config: Path | None

@@ -106,7 +106,6 @@ INTERACTIVE_OPTIONS_WITH_VALUES = {
 INTERACTIVE_FLAG_OPTIONS = {
     "--no-write",
     "--no-skills",
-    "--no-prompt-cache",
     "--no-repository-memory",
     "--no-subagents",
     "--no-color",
@@ -131,7 +130,6 @@ class InteractiveLaunch:
     no_skills: bool = False
     mcp_config: Path | None = None
     no_subagents: bool = False
-    no_prompt_cache: bool = False
     no_repository_memory: bool = False
     no_color: bool = False
     session_mode: SessionLaunchMode = SessionLaunchMode.NEW
@@ -220,7 +218,6 @@ def exec_command(
         help="Disable the skill catalog and read(source=skill) capability.",
     ),
     debug_trace: bool = typer.Option(False, "--debug-trace", help="Persist debug trace artifacts."),
-    no_prompt_cache: bool = typer.Option(False, "--no-prompt-cache", help="Disable prompt caching."),
     no_repository_memory: bool = typer.Option(
         False,
         "--no-repository-memory",
@@ -260,7 +257,6 @@ def exec_command(
     except ValueError as exc:
         typer.echo(f"Runtime configuration error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    prompt_cache_enabled = _resolve_prompt_cache_enabled(no_prompt_cache)
     resolved_mcp_config = _resolve_mcp_config(mcp_config)
     resolved_workspace = _resolve_worktree_workspace(workspace, worktree)
     executor = RunExecutor(run_store=RunStore())
@@ -278,7 +274,6 @@ def exec_command(
         collaboration_mode=mode,
         skills=_parse_skill_names(skills),
         skills_enabled=not no_skills,
-        prompt_cache_enabled=prompt_cache_enabled,
         repository_memory_enabled=not no_repository_memory,
         subagents_enabled=not no_subagents,
         mcp_config=resolved_mcp_config,
@@ -362,7 +357,6 @@ def resume(
     no_skills: bool = typer.Option(False, "--no-skills"),
     mcp_config: Optional[Path] = typer.Option(None, "--mcp-config"),
     no_subagents: bool = typer.Option(False, "--no-subagents"),
-    no_prompt_cache: bool = typer.Option(False, "--no-prompt-cache"),
     no_repository_memory: bool = typer.Option(
         False,
         "--no-repository-memory",
@@ -389,7 +383,6 @@ def resume(
         no_skills=no_skills,
         mcp_config=mcp_config,
         no_subagents=no_subagents,
-        no_prompt_cache=no_prompt_cache,
         no_repository_memory=no_repository_memory,
         no_color=no_color,
         session_mode=(
@@ -842,7 +835,6 @@ def bench_run(
         min=1,
         help="Maximum tool calls per task.",
     ),
-    no_prompt_cache: bool = typer.Option(False, "--no-prompt-cache", help="Disable prompt caching."),
     no_repository_memory: bool = typer.Option(
         False,
         "--no-repository-memory",
@@ -852,7 +844,6 @@ def bench_run(
     """Run a benchmark suite."""
     resolved_provider = _resolve_provider(provider)
     resolved_model = _resolve_model(model)
-    prompt_cache_enabled = _resolve_prompt_cache_enabled(no_prompt_cache)
     try:
         summary = BenchmarkRunner(
             BenchmarkRunnerConfig(
@@ -860,7 +851,6 @@ def bench_run(
                 model=resolved_model,
                 max_steps=max_steps,
                 max_tool_calls=max_tool_calls,
-                prompt_cache_enabled=prompt_cache_enabled,
                 repository_memory_enabled=not no_repository_memory,
             )
         ).run_suite(suite, output)
@@ -896,7 +886,6 @@ def bench_scenario(
     ),
     max_steps: int = typer.Option(50, "--max-steps", min=1),
     max_tool_calls: int = typer.Option(60, "--max-tool-calls", min=1),
-    no_prompt_cache: bool = typer.Option(False, "--no-prompt-cache"),
     memory_mode: Optional[str] = typer.Option(
         None,
         "--memory-mode",
@@ -933,7 +922,6 @@ def bench_scenario(
 
     resolved_provider = _resolve_provider(provider)
     resolved_model = _resolve_model(model)
-    prompt_cache_enabled = _resolve_prompt_cache_enabled(no_prompt_cache)
     try:
         resolved_memory_mode = _benchmark_mode(
             memory_mode,
@@ -951,7 +939,6 @@ def bench_scenario(
                 model=resolved_model,
                 max_steps=max_steps,
                 max_tool_calls=max_tool_calls,
-                prompt_cache_enabled=prompt_cache_enabled,
                 ablation_matrix=ablation,
                 memory_mode=resolved_memory_mode,
                 context_compaction_mode=resolved_context_compaction_mode,
@@ -1009,7 +996,6 @@ def bench_swebench(
     ),
     attempts: int = typer.Option(1, "--attempts", min=1),
     repo_cache: Optional[Path] = typer.Option(None, "--repo-cache"),
-    no_prompt_cache: bool = typer.Option(False, "--no-prompt-cache"),
     no_agent_verification: bool = typer.Option(False, "--no-agent-verification"),
     no_skills: bool = typer.Option(False, "--no-skills"),
     resume: bool = typer.Option(True, "--resume/--no-resume"),
@@ -1076,7 +1062,6 @@ def bench_swebench(
                 max_tool_calls=max_tool_calls,
                 max_elapsed_seconds=max_elapsed_seconds,
             ),
-            prompt_cache_enabled=_resolve_prompt_cache_enabled(no_prompt_cache),
             agent_verification_enabled=not no_agent_verification,
             enable_subagents=False,
             enable_skills=not no_skills,
@@ -1243,9 +1228,6 @@ def _run_terminal(launch: InteractiveLaunch) -> None:
         collaboration_mode=launch.collaboration_mode.value,
         skills=_parse_skill_names(launch.skills),
         skills_enabled=not launch.no_skills,
-        prompt_cache_enabled=_resolve_prompt_cache_enabled(
-            launch.no_prompt_cache
-        ),
         repository_memory_enabled=not launch.no_repository_memory,
         subagents_enabled=not launch.no_subagents,
         mcp_config=_resolve_mcp_config(launch.mcp_config),
@@ -1331,7 +1313,6 @@ def _main_help(program_name: str) -> str:
             "  --mode <m>             default or plan",
             "  --provider <name>      qwen, kimi, openai, anthropic, deepseek, or ollama",
             "  --model <name>         Model name",
-            "  --no-prompt-cache      Disable prompt prefix caching",
             "  --no-subagents         Disable bounded read-only delegation",
             "  --no-color             Disable terminal colors",
             "  --mcp-config <file>    Load explicit local MCP stdio tools",
@@ -1346,7 +1327,6 @@ def _main_help(program_name: str) -> str:
             "Environment defaults:",
             "  MINICODE_PROVIDER",
             "  MINICODE_MODEL",
-            "  MINICODE_PROMPT_CACHE  set to 0, false, or no to disable caching",
             "  MINICODE_MCP_CONFIG    explicit local MCP JSON configuration file",
             "  MINICODE_SANDBOX_IMAGE Docker image used by --sandbox docker",
             "  MINICODE_HOME          user data root; Sessions live under <MINICODE_HOME>/sessions",
@@ -1489,15 +1469,6 @@ def _resolve_mcp_config(value: Path | None) -> Path | None:
     return configured.expanduser().resolve() if configured is not None else None
 
 
-def _resolve_prompt_cache_enabled(no_prompt_cache: bool = False) -> bool:
-    if no_prompt_cache:
-        return False
-    configured = os.environ.get("MINICODE_PROMPT_CACHE")
-    if configured is None:
-        return True
-    return configured.strip().lower() not in {"0", "false", "no"}
-
-
 def _resolve_run_id(
     run_id: str | None,
     *,
@@ -1593,7 +1564,6 @@ def _parse_interactive_task_args(args: list[str]) -> InteractiveLaunch:
             else None
         ),
         no_subagents="--no-subagents" in flags,
-        no_prompt_cache="--no-prompt-cache" in flags,
         no_repository_memory="--no-repository-memory" in flags,
         no_color="--no-color" in flags,
         session_mode=session_mode,

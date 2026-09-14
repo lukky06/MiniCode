@@ -72,7 +72,6 @@ class BenchmarkRunnerConfig:
     model: str | None = None
     max_steps: int = 20
     max_tool_calls: int = 30
-    prompt_cache_enabled: bool = True
     repository_memory_enabled: bool = False
     enable_subagents: bool = False
 
@@ -154,7 +153,6 @@ class BenchmarkRunner:
                 config=AgentLoopConfig(
                     max_steps=self.config.max_steps,
                     max_tool_calls=self.config.max_tool_calls,
-                    prompt_cache_enabled=self.config.prompt_cache_enabled,
                     rollback_on_unfinished_stop=False,
                     repository_memory_enabled=self.config.repository_memory_enabled,
                     enable_subagents=self.config.enable_subagents,
@@ -242,7 +240,6 @@ class BenchmarkRunner:
             read_tool_calls=metrics["read_tool_calls"],
             unique_read_resources=metrics["unique_read_resources"],
             repeated_read_calls=metrics["repeated_read_calls"],
-            project_cache_hit_count=metrics["project_cache_hit_count"],
             model_retry_count=metrics["model_retry_count"],
             reactive_compaction_count=metrics["reactive_compaction_count"],
             output_recovery_count=metrics["output_recovery_count"],
@@ -1147,7 +1144,6 @@ def _trace_metrics(trace_path: Path) -> dict[str, int | None]:
         ),
         "unique_read_resources": context_metrics.unique_read_resources,
         "repeated_read_calls": context_metrics.repeated_read_calls,
-        "project_cache_hit_count": context_metrics.project_cache_hit_count,
         "model_retry_count": sum(
             1 for event in events if event.get("type") == "model_retry_scheduled"
         ),
@@ -1309,7 +1305,6 @@ def _build_summary(
         read_tool_calls=sum(result.read_tool_calls for result in results),
         unique_read_resources=sum(result.unique_read_resources for result in results),
         repeated_read_calls=sum(result.repeated_read_calls for result in results),
-        project_cache_hit_count=sum(result.project_cache_hit_count for result in results),
         model_retry_count=sum(result.model_retry_count for result in results),
         reactive_compaction_count=sum(
             result.reactive_compaction_count for result in results
@@ -1367,7 +1362,6 @@ def _write_report(path: Path, summary: BenchmarkSummary) -> None:
         f"- Read Tool Calls: {summary.read_tool_calls}",
         f"- Unique Read Resources: {summary.unique_read_resources}",
         f"- Repeated Read Calls: {summary.repeated_read_calls}",
-        f"- Project Cache Hits: {summary.project_cache_hit_count}",
         f"- Model Retries: {summary.model_retry_count}",
         f"- Reactive Compactions: {summary.reactive_compaction_count}",
         f"- Output Recoveries: {summary.output_recovery_count}",

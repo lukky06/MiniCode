@@ -148,9 +148,11 @@ def test_steering_is_one_per_boundary_fifo_and_persisted_to_session_checkpoint(
         "first correction",
         "second correction",
     ]
-    checkpoint = CheckpointStore(trace_path.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
-    assert [message["content"] for message in checkpoint.message_history if message["role"] == "user"][-3:] == [
+    checkpoint_history = checkpoint_store.load_history(checkpoint)
+    assert [message["content"] for message in checkpoint_history if message["role"] == "user"][-3:] == [
         "Read both files",
         "first correction",
         "second correction",
@@ -225,10 +227,12 @@ def test_cancelled_run_keeps_pending_steering_and_persists_consumed_history(
 
     assert result.status == "cancelled"
     assert len(queue) == 1
-    checkpoint = CheckpointStore(trace_path.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
-    assert "pending after cancellation" not in str(checkpoint.message_history)
-    assert [message["role"] for message in checkpoint.message_history[-2:]] == [
+    checkpoint_history = checkpoint_store.load_history(checkpoint)
+    assert "pending after cancellation" not in str(checkpoint_history)
+    assert [message["role"] for message in checkpoint_history[-2:]] == [
         "assistant",
         "tool",
     ]

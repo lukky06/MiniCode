@@ -115,8 +115,5 @@ class BuiltContext(BaseModel):
     messages: list[dict[str, Any]]
     token_estimate: int
     compression_events: list[ContextCompressionEvent] = Field(default_factory=list)
-    prompt_cache_enabled: bool = False
-    prompt_cache_hit: bool = False
-    prompt_cache_key: str | None = None
     prompt_prefix_hash: str | None = None
     prompt_prefix_tokens: int = 0

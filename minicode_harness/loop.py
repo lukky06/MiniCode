@@ -50,7 +50,7 @@ from minicode_harness.state import (
     UserInputOption,
     UserInputRequest,
 )
-from minicode_harness.models import ModelClient, ModelRequest, ModelResponse, NormalizedToolCall
+from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
 from minicode_harness.output import OutputSink
 from minicode_harness.policy import (
     ApprovalPolicy,
@@ -103,7 +103,6 @@ class AgentLoopConfig:
     max_steps: int = 50
     max_tool_calls: int = 60
     start_step: int = 0
-    prompt_cache_enabled: bool = True
     rollback_on_unfinished_stop: bool = True
     repository_memory_enabled: bool = True
     enable_subagents: bool = True
@@ -340,7 +339,6 @@ class AgentLoop:
             enable_progress_guidance=self.config.enable_progress_guidance,
             max_steps=self.config.max_steps,
             start_step=self.config.start_step,
-            prompt_cache_enabled=self.config.prompt_cache_enabled,
             emit_lifecycle_hook=lambda name, step, payload: self._emit_lifecycle_hook(
                 name,
                 step=step,
@@ -366,7 +364,6 @@ class AgentLoop:
         self.data_dir = components.data_dir
         self.context_builder = components.context_builder
         self.context_preparer = components.context_preparer
-        self.project_context_cache = components.project_context_cache
         self.checkpoint_store = components.checkpoint_store
         self.approval_store = components.approval_store
         self.approval_client = components.approval_client
@@ -1047,22 +1044,6 @@ class AgentLoop:
         )
         return digest, tool_schemas
 
-    def _write_prompt_context_artifact(self, step: int, request: ModelRequest) -> str:
-        relative = Path("prompts") / f"prompt_step_{step}.json"
-        path = self.artifact_dir / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                request.model_dump(mode="json"),
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return relative.as_posix()
-
     def _emit_accepted_final_text(self, final_text: str) -> None:
         if self.stream_model and final_text and not self._current_stream_emitted_final_text:
             self.output_sink.model_text_delta(final_text)
@@ -1212,8 +1193,6 @@ def _tool_ui_metadata(
             metadata[key] = value[:20]
         else:
             metadata[key] = value
-    if status == "project_cache_hit":
-        metadata["cached"] = True
     if observation.artifact_path:
         metadata["artifact_path"] = observation.artifact_path
     return metadata

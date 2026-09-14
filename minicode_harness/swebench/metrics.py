@@ -66,7 +66,6 @@ def collect_swebench_metrics(
         "read_tool_calls": context.workspace_read_calls + context.artifact_read_calls,
         "unique_read_resources": context.unique_read_resources,
         "repeated_read_calls": context.repeated_read_calls,
-        "project_cache_hits": context.project_cache_hit_count,
         "model_recoveries": (
             context.model_retry_count
             + context.reactive_compaction_count

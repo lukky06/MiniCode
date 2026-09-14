@@ -262,10 +262,12 @@ def _interrupted_run(tmp_path, *, run_id: str = "run_20260907_901"):
         step=1,
         task=session.task,
         workspace=session.workspace,
-        message_history=[{"role": "user", "content": session.task}],
         status="running",
     )
-    CheckpointStore(run_path / "checkpoints").save(checkpoint)
+    CheckpointStore(run_path / "checkpoints").save(
+        checkpoint,
+        message_history=[{"role": "user", "content": session.task}],
+    )
     return workspace, run_store, session, run_path
 
 

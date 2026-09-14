@@ -31,7 +31,6 @@ interface ActivityEntry {
 const MAX_VISIBLE_ENTRIES = 6;
 const SUCCESSFUL_TOOL_STATUSES = new Set([
   "ok",
-  "project_cache_hit",
   "duplicate_reused",
   "background_started",
 ]);

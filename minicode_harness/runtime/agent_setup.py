@@ -12,8 +12,6 @@ from minicode_harness.context import (
     ContextPreparer,
     ContextSkill,
     LLMSemanticHistoryCompactor,
-    ProjectContextCache,
-    PromptSectionCache,
     RepositoryRuleLoader,
     RunState,
     TokenBudget,
@@ -76,7 +74,6 @@ class AgentComponents:
     data_dir: Path
     context_builder: ContextBuilder
     context_preparer: ContextPreparer
-    project_context_cache: ProjectContextCache
     checkpoint_store: CheckpointStore
     approval_store: ApprovalStore
     approval_client: ApprovalClient
@@ -135,7 +132,6 @@ def build_agent_components(
     enable_progress_guidance: bool,
     max_steps: int,
     start_step: int,
-    prompt_cache_enabled: bool,
     emit_lifecycle_hook: Callable[[str, int | None, dict[str, Any]], None],
 ) -> AgentComponents:
     """Build dependencies without taking ownership of AgentLoop control flow."""
@@ -242,16 +238,6 @@ def build_agent_components(
             else (memory_store.data_dir if memory_store is not None else default_data_dir())
         )
     )
-    prompt_cache = (
-        PromptSectionCache(
-            workspace=workspace,
-            provider=provider,
-            model=model or getattr(model_client, "model", None),
-            data_dir=resolved_data_dir,
-        )
-        if prompt_cache_enabled
-        else None
-    )
     capabilities_budget = TokenBudget(
         context_budget=int(getattr(model_capabilities, "context_window", 32_000)),
         reserved_output=int(
@@ -263,8 +249,6 @@ def build_agent_components(
     )
     resolved_context_builder = context_builder or ContextBuilder(
         budget=capabilities_budget,
-        prompt_cache=prompt_cache,
-        prompt_cache_enabled=prompt_cache_enabled,
     )
     resolved_context_preparer = context_preparer or ContextPreparer(
         resolved_context_builder.budget,
@@ -273,7 +257,6 @@ def build_agent_components(
             trace_writer=trace_writer,
         ),
     )
-    project_context_cache = ProjectContextCache(resolved_data_dir)
     resolved_checkpoint_store = checkpoint_store or CheckpointStore(
         trace_writer.trace_path.parent / "checkpoints"
     )
@@ -300,7 +283,6 @@ def build_agent_components(
         execution_journal=execution_journal,
         session_memory=session_memory,
         artifact_dir=artifact_dir,
-        project_context_cache=project_context_cache,
         output_sink=resolved_output_sink,
         initial_observations=initial_observations,
         run_state=run_state,
@@ -357,7 +339,6 @@ def build_agent_components(
         data_dir=resolved_data_dir,
         context_builder=resolved_context_builder,
         context_preparer=resolved_context_preparer,
-        project_context_cache=project_context_cache,
         checkpoint_store=resolved_checkpoint_store,
         approval_store=resolved_approval_store,
         approval_client=resolved_approval_client,

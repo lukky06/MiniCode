@@ -1,4 +1,4 @@
-"""Context construction, preparation, caching, and run-state types."""
+"""Context construction, preparation, and run-state types."""
 
 from .builder import ContextBuilder
 from .compaction_state import (
@@ -41,8 +41,6 @@ from .task_projection import (
     render_current_task_record,
     strip_task_protocol,
 )
-from .project_context_cache import CachedToolResult, ProjectContextCache
-from .prompt_cache import PromptCacheEntry, PromptSectionCache
 from .repository_rules import (
     MAX_REPOSITORY_RULE_BYTES,
     RepositoryRuleDocument,
@@ -82,7 +80,6 @@ from .types import (
 
 __all__ = [
     "BuiltContext",
-    "CachedToolResult",
     "ContextBuilder",
     "ContextCompressionEvent",
     "ContextObservation",
@@ -94,9 +91,6 @@ __all__ = [
     "InspectedFile",
     "PreparedModelRequest",
     "PromptBudgetExceeded",
-    "ProjectContextCache",
-    "PromptCacheEntry",
-    "PromptSectionCache",
     "RepositoryRuleDocument",
     "RepositoryRuleLoader",
     "RepositoryRulesSnapshot",

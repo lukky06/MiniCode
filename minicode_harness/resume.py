@@ -111,6 +111,7 @@ def _reconcile_execution_journal_before_resume(
     workspace: str,
     task: str,
     checkpoint: RunCheckpoint | None,
+    message_history: list[dict[str, Any]],
     checkpoint_store: CheckpointStore,
     trace_writer: TraceWriter,
 ) -> tuple[RunCheckpoint | None, ResumeResult | None]:
@@ -152,7 +153,7 @@ def _reconcile_execution_journal_before_resume(
     }
     checkpointed_tool_call_ids.update(
         str(message.get("tool_call_id"))
-        for message in checkpoint.message_history
+        for message in message_history
         if message.get("role") == "tool" and message.get("tool_call_id")
     )
     reconciliations = journal.reconcile_uncheckpointed(
@@ -189,7 +190,7 @@ def _reconcile_execution_journal_before_resume(
         )
 
     observations = list(checkpoint.recent_observations)
-    message_history = list(checkpoint.message_history)
+    message_history = list(message_history)
     modified_files = list(checkpoint.modified_files)
     run_state = initialize_run_state(checkpoint.run_state)
     step = checkpoint.step
@@ -228,7 +229,6 @@ def _reconcile_execution_journal_before_resume(
         task=task,
         workspace=workspace,
         observations=observations,
-        message_history=message_history,
         compaction_state=checkpoint.compaction_state,
         modified_files=modified_files,
         run_state=run_state,
@@ -239,7 +239,11 @@ def _reconcile_execution_journal_before_resume(
         status="running",
         reason="execution_journal_reconciled",
     )
-    saved_path = checkpoint_store.save(updated)
+    saved_path = checkpoint_store.save(
+        updated,
+        message_history=message_history,
+    )
+    updated = checkpoint_store.load_latest() or updated
 
     latest_by_entry: dict[str, Any] = {}
     for event in events:
@@ -315,6 +319,23 @@ def resume_run(
         force_rebuild_context=force_rebuild_context,
     )
 
+    message_history: list[dict[str, Any]] = []
+    if checkpoint is not None:
+        try:
+            message_history = checkpoint_store.load_history(checkpoint)
+        except ValueError as exc:
+            trace_writer.write_event(
+                "resume_blocked",
+                run_id=run_id,
+                reason="canonical_history_invalid",
+                error=str(exc),
+            )
+            return ResumeResult(
+                status="blocked",
+                run_id=run_id,
+                reason="canonical_history_invalid",
+            )
+
     original_checkpoint = checkpoint
     checkpoint, reconciliation_block = _reconcile_execution_journal_before_resume(
         run_id=run_id,
@@ -322,15 +343,18 @@ def resume_run(
         workspace=session.workspace,
         task=session.task,
         checkpoint=checkpoint,
+        message_history=message_history,
         checkpoint_store=checkpoint_store,
         trace_writer=trace_writer,
     )
     if reconciliation_block is not None:
         return reconciliation_block
-    if checkpoint is not original_checkpoint:
+    if checkpoint is not original_checkpoint and checkpoint is not None:
+        message_history = checkpoint_store.load_history(checkpoint)
         _sync_conversation_history(
             conversation_session,
-            checkpoint,
+            message_history,
+            checkpoint.compaction_state,
             trace_writer=trace_writer,
             run_id=run_id,
         )
@@ -352,7 +376,6 @@ def resume_run(
             )
 
     observations = list(checkpoint.recent_observations if checkpoint else [])
-    message_history = list(checkpoint.message_history if checkpoint else [])
     compaction_state = (
         checkpoint.compaction_state.model_copy(deep=True)
         if checkpoint is not None
@@ -387,16 +410,31 @@ def resume_run(
             cancellation_token=cancellation_token,
         )
         if restored.status != "continued":
+            latest_checkpoint = checkpoint_store.load_latest()
+            latest_history = (
+                checkpoint_store.load_history(latest_checkpoint)
+                if latest_checkpoint is not None
+                else message_history
+            )
             _sync_conversation_history(
                 conversation_session,
-                checkpoint_store.load_latest(),
+                latest_history,
+                (
+                    latest_checkpoint.compaction_state
+                    if latest_checkpoint is not None
+                    else compaction_state
+                ),
                 trace_writer=trace_writer,
                 run_id=run_id,
             )
             return restored
         checkpoint = checkpoint_store.load_latest()
         observations = list(checkpoint.recent_observations if checkpoint else observations)
-        message_history = list(checkpoint.message_history if checkpoint else message_history)
+        message_history = (
+            checkpoint_store.load_history(checkpoint)
+            if checkpoint is not None
+            else message_history
+        )
         compaction_state = (
             checkpoint.compaction_state.model_copy(deep=True)
             if checkpoint is not None
@@ -429,7 +467,6 @@ def resume_run(
                     task=session.task,
                     workspace=session.workspace,
                     observations=observations,
-                    message_history=message_history,
                     compaction_state=compaction_state,
                     modified_files=modified_files,
                     run_state=run_state,
@@ -440,7 +477,10 @@ def resume_run(
                     status="running",
                     reason="steering_message",
                 )
-                saved_path = checkpoint_store.save(checkpoint)
+                saved_path = checkpoint_store.save(
+                    checkpoint,
+                    message_history=message_history,
+                )
                 trace_writer.write_event(
                     "steering_message_consumed",
                     step=start_step,
@@ -451,7 +491,8 @@ def resume_run(
                 )
                 _sync_conversation_history(
                     conversation_session,
-                    checkpoint,
+                    message_history,
+                    checkpoint.compaction_state,
                     trace_writer=trace_writer,
                     run_id=run_id,
                 )
@@ -538,7 +579,6 @@ def resume_run(
         config=AgentLoopConfig(
             max_steps=session.max_steps,
             start_step=start_step,
-            prompt_cache_enabled=session.prompt_cache_enabled,
             repository_memory_enabled=session.repository_memory_enabled,
             enable_subagents=session.subagents_enabled,
             enable_worktree_workers=not session.no_write,
@@ -756,7 +796,6 @@ def _resolve_pending_approval(
                 task=task,
                 workspace=session_workspace,
                 observations=observations,
-                message_history=message_history,
                 compaction_state=compaction_state,
                 modified_files=modified_files,
                 run_state=run_state,
@@ -770,7 +809,8 @@ def _resolve_pending_approval(
                 ),
                 status=status,
                 reason=reason,
-            )
+            ),
+            message_history=message_history,
         )
         if response.decision == ApprovalDecision.ABORT:
             return ResumeResult(status="stopped", run_id=run_id, reason=reason)
@@ -898,7 +938,6 @@ def _resolve_pending_approval(
         task=task,
         workspace=session_workspace,
         observations=observations,
-        message_history=message_history,
         compaction_state=compaction_state,
         modified_files=modified_files,
         run_state=run_state,
@@ -913,7 +952,10 @@ def _resolve_pending_approval(
         status="running",
         reason=f"restored_approval:{pending.tool_name}",
     )
-    saved_path = checkpoint_store.save(checkpoint)
+    saved_path = checkpoint_store.save(
+        checkpoint,
+        message_history=message_history,
+    )
     trace_writer.write_event(
         "checkpoint_saved",
         step=step,
@@ -950,17 +992,18 @@ def _load_conversation_session(
 
 def _sync_conversation_history(
     session: ReplSessionMemory | None,
-    checkpoint: RunCheckpoint | None,
+    message_history: list[dict[str, Any]],
+    compaction_state: SessionCompactionState,
     *,
     trace_writer: TraceWriter,
     run_id: str,
 ) -> None:
-    if session is None or checkpoint is None:
+    if session is None:
         return
     try:
         session.replace_session_state(
-            messages=checkpoint.message_history,
-            compaction_state=checkpoint.compaction_state,
+            messages=message_history,
+            compaction_state=compaction_state,
         )
     except (OSError, ValueError) as exc:
         trace_writer.write_event(
@@ -1058,7 +1101,6 @@ def _checkpoint_for_resume(
     task: str,
     workspace: str,
     observations: list[Any],
-    message_history: list[dict[str, Any]],
     compaction_state: SessionCompactionState,
     modified_files: list[str],
     run_state: RunState,
@@ -1077,7 +1119,6 @@ def _checkpoint_for_resume(
         run_state=run_state,
         task_state=task_state,
         recent_observations=observations[-MAX_CHECKPOINT_OBSERVATIONS:],
-        message_history=message_history,
         compaction_state=compaction_state,
         modified_files=modified_files,
         workspace_digest=digest_workspace_files(

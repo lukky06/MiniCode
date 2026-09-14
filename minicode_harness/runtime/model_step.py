@@ -175,7 +175,6 @@ class ModelStepRunner:
                 reserved_output=prepared.reserved_output,
             )
         )
-        prompt_artifact = loop._write_prompt_context_artifact(step, prepared.request)
         compression_events = [
             *built.compression_events,
             *prepared.compression_events,
@@ -215,9 +214,6 @@ class ModelStepRunner:
             token_estimator_version=prepared.token_estimator_version,
             compression_count=len(compression_events),
             available_skills=[skill.name for skill in loop.available_skills],
-            prompt_cache_enabled=built.prompt_cache_enabled,
-            prompt_cache_hit=built.prompt_cache_hit,
-            prompt_cache_key=built.prompt_cache_key,
             prompt_prefix_hash=built.prompt_prefix_hash,
             prompt_prefix_tokens=built.prompt_prefix_tokens,
             prompt_builder_version=PROMPT_BUILDER_VERSION,
@@ -231,7 +227,6 @@ class ModelStepRunner:
             available_tools=list(tool_names),
             collaboration_mode=loop.collaboration_mode.value,
             duration_ms=duration_ms,
-            prompt_context_artifact=prompt_artifact,
             tool_calls_used=loop.tool_call_count,
             remaining_tool_calls=max(
                 0,

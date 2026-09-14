@@ -16,7 +16,6 @@ from minicode_harness.context import (
     ContextBuilder,
     ContextPreparer,
     LLMSemanticHistoryCompactor,
-    PromptSectionCache,
     TokenBudget,
     validate_message_protocol,
 )
@@ -153,7 +152,6 @@ class BenchmarkScenarioRunnerConfig:
     model: str | None = None
     max_steps: int = 50
     max_tool_calls: int = 60
-    prompt_cache_enabled: bool = True
     ablation_matrix: bool = False
     memory_mode: MemoryMode | None = None
     context_compaction_mode: ContextCompactionMode | None = None
@@ -883,13 +881,8 @@ class BenchmarkScenarioRunner:
             context_builder, context_preparer = _scenario_context_components(
                 scenario,
                 variant=variant,
-                workspace=workspace,
-                data_dir=repository_memory.data_dir,
-                provider=self.config.provider,
-                model=self.config.model or getattr(model_client, "model", None),
                 model_client=model_client,
                 trace_writer=trace_writer,
-                prompt_cache_enabled=self.config.prompt_cache_enabled,
                 context_budget_override=self.config.context_budget_override,
             )
             if turn.execution_mode == "memory_only":
@@ -915,7 +908,6 @@ class BenchmarkScenarioRunner:
                     config=AgentLoopConfig(
                         max_steps=self.config.max_steps,
                         max_tool_calls=self.config.max_tool_calls,
-                        prompt_cache_enabled=self.config.prompt_cache_enabled,
                         rollback_on_unfinished_stop=False,
                         repository_memory_enabled=variant.memory_mode != "off",
                     ),
@@ -1507,13 +1499,8 @@ def _scenario_context_components(
     scenario: BenchmarkScenario,
     *,
     variant: BenchmarkScenarioVariant,
-    workspace: Path,
-    data_dir: Path,
-    provider: str,
-    model: str | None,
     model_client: ModelClient,
     trace_writer: TraceWriter,
-    prompt_cache_enabled: bool,
     context_budget_override: int | None = None,
 ) -> tuple[ContextBuilder | None, ContextPreparer | None]:
     resolved_budget = (
@@ -1532,16 +1519,6 @@ def _scenario_context_components(
         semantic_limit=0.88,
         hard_limit=0.95,
     )
-    prompt_cache = (
-        PromptSectionCache(
-            workspace=workspace,
-            provider=provider,
-            model=model,
-            data_dir=data_dir,
-        )
-        if prompt_cache_enabled
-        else None
-    )
     semantic_compactor = None
     if variant.context_compaction_mode == "llm_hard":
         semantic_compactor = LLMSemanticHistoryCompactor(
@@ -1552,11 +1529,7 @@ def _scenario_context_components(
             trace_writer=trace_writer,
         )
     return (
-        ContextBuilder(
-            budget=budget,
-            prompt_cache=prompt_cache,
-            prompt_cache_enabled=prompt_cache_enabled,
-        ),
+        ContextBuilder(budget=budget),
         ContextPreparer(
             budget,
             semantic_compactor=semantic_compactor,
@@ -2140,7 +2113,6 @@ def _scenario_turn_metrics(
             "read_tool_calls": trace_metrics["read_tool_calls"],
             "unique_read_resources": context.unique_read_resources,
             "repeated_read_calls": context.repeated_read_calls,
-            "project_cache_hit_count": context.project_cache_hit_count,
             "memory_topic_read_count": trace_metrics["memory_topic_read_count"],
             "unique_memory_topics": trace_metrics["unique_memory_topics"],
             "repeated_memory_topic_reads": trace_metrics[

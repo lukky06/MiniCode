@@ -24,7 +24,7 @@ MAX_RESULT_PREVIEW_CHARS = 320
 
 _WRITE_TOOLS = {"apply_patch", "edit", "write"}
 _EXISTING_READ_TOOLS = {"read"}
-_REUSE_STATUSES = {"duplicate_reused", "project_cache_hit", "session_cache_hit"}
+_REUSE_STATUSES = {"duplicate_reused"}
 _SUCCESS_STATUSES = {"ok", "success", "passed"}
 _NOOP_STATUSES = {"idempotent_noop", "noop", "unchanged"}
 _REVERT_STATUSES = {"reverted", "rolled_back", "restored"}

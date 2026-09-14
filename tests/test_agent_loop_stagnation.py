@@ -161,9 +161,10 @@ def test_eight_non_write_calls_inject_progress_nudge(tmp_path) -> None:
         and event.get("reason") == "progress_guidance"
         for event in trace_events
     )
-    checkpoint = CheckpointStore(trace_path.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
-    assert len(_nudge_messages(checkpoint.message_history)) == 1
+    assert len(_nudge_messages(checkpoint_store.load_history(checkpoint))) == 1
 
 
 def test_stagnation_guidance_is_appended_once_to_canonical_history(tmp_path) -> None:

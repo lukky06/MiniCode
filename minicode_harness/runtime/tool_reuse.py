@@ -220,7 +220,7 @@ class ToolReuseTracker:
         workspace_generation: int,
     ) -> None:
         status = str(observation.metadata.get("status") or "ok")
-        if status not in {"ok", "project_cache_hit"}:
+        if status != "ok":
             return
         path = normalize_workspace_path(
             observation.metadata.get("path")
@@ -307,10 +307,7 @@ class ToolReuseTracker:
             if generation != workspace_generation:
                 continue
             status = str(observation.metadata.get("status") or "ok")
-            if observation_is_workspace_read(observation) and status in {
-                "ok",
-                "project_cache_hit",
-            }:
+            if observation_is_workspace_read(observation) and status == "ok":
                 path = normalize_workspace_path(observation.metadata.get("path"))
                 start = coerce_optional_int(observation.metadata.get("start_line"))
                 end = coerce_optional_int(observation.metadata.get("end_line"))

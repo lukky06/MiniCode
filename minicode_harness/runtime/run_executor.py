@@ -59,7 +59,6 @@ class RunExecutionRequest(BaseModel):
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
     skills: list[str] | None = None
     skills_enabled: bool = True
-    prompt_cache_enabled: bool = True
     repository_memory_enabled: bool = True
     subagents_enabled: bool = True
     worktree_workers_enabled: bool = True
@@ -260,7 +259,6 @@ class RunExecutor:
             collaboration_mode=CollaborationMode.PLAN.value,
             skills="review",
             no_skills=False,
-            prompt_cache_enabled=True,
             repository_memory_enabled=False,
             subagents_enabled=False,
         )
@@ -344,7 +342,6 @@ class RunExecutor:
             collaboration_mode=request.collaboration_mode.value,
             skills=skills_csv,
             no_skills=not request.skills_enabled,
-            prompt_cache_enabled=request.prompt_cache_enabled,
             repository_memory_enabled=request.repository_memory_enabled,
             mcp_config=str(request.mcp_config) if request.mcp_config is not None else None,
             subagents_enabled=request.subagents_enabled,
@@ -367,7 +364,6 @@ class RunExecutor:
             sandbox_mode=request.sandbox_mode.value,
             sandbox_image=request.sandbox_image,
             collaboration_mode=request.collaboration_mode.value,
-            prompt_cache_enabled=request.prompt_cache_enabled,
             repository_memory_enabled=request.repository_memory_enabled,
             context_architecture="canonical_messages",
             mcp_config=str(request.mcp_config) if request.mcp_config is not None else None,
@@ -446,7 +442,6 @@ class RunExecutor:
             model_client=model_client,
             trace_writer=trace_writer,
             config=AgentLoopConfig(
-                prompt_cache_enabled=request.prompt_cache_enabled,
                 repository_memory_enabled=request.repository_memory_enabled,
                 enable_subagents=request.subagents_enabled,
                 enable_worktree_workers=(

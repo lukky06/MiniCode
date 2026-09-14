@@ -64,7 +64,6 @@ class SweBenchRunnerConfig:
     provider: str = "qwen"
     model: str | None = None
     budget: SweBenchBudget = field(default_factory=SweBenchBudget)
-    prompt_cache_enabled: bool = True
     agent_verification_enabled: bool = True
     enable_subagents: bool = False
     enable_skills: bool = True
@@ -424,10 +423,15 @@ class SweBenchRunner:
         loop: AgentLoop | None = None
         error: str | None = None
         try:
+            checkpoint_history = (
+                checkpoint_store.load_history(checkpoint)
+                if checkpoint is not None
+                else []
+            )
             if checkpoint is not None and checkpoint.status == "completed":
                 agent_result = AgentRunResult(
                     status="completed",
-                    final_text=_last_assistant_text(checkpoint.message_history),
+                    final_text=_last_assistant_text(checkpoint_history),
                     steps=checkpoint.step,
                     tool_calls=checkpoint.tool_calls,
                     stop_reason=checkpoint.reason or "final_text",
@@ -447,7 +451,6 @@ class SweBenchRunner:
                         max_steps=self.config.budget.max_steps,
                         max_tool_calls=self.config.budget.max_tool_calls,
                         start_step=checkpoint.step if checkpoint else 0,
-                        prompt_cache_enabled=self.config.prompt_cache_enabled,
                         rollback_on_unfinished_stop=False,
                         repository_memory_enabled=False,
                         enable_subagents=self.config.enable_subagents,
@@ -494,7 +497,7 @@ class SweBenchRunner:
                     ),
                     initial_run_state=checkpoint.run_state if checkpoint else None,
                     initial_message_history=(
-                        list(checkpoint.message_history) if checkpoint else None
+                        list(checkpoint_history) if checkpoint else None
                     ),
                     initial_tool_calls=checkpoint.tool_calls if checkpoint else 0,
                     provider=self.config.provider,

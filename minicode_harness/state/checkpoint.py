@@ -21,6 +21,8 @@ from .tasks import TaskListState
 
 
 LATEST_CHECKPOINT_FILE = "latest.json"
+CANONICAL_HISTORY_FILE = "history.json"
+EMPTY_HISTORY_SHA256 = hashlib.sha256(b"[]").hexdigest()
 
 
 class WorkspaceConflict(BaseModel):
@@ -43,7 +45,8 @@ class RunCheckpoint(BaseModel):
     run_state: RunState = Field(default_factory=RunState)
     task_state: TaskListState = Field(default_factory=TaskListState)
     recent_observations: list[ContextObservation] = Field(default_factory=list)
-    message_history: list[dict[str, Any]] = Field(default_factory=list)
+    history_length: int = Field(default=0, ge=0)
+    history_sha256: str = Field(default=EMPTY_HISTORY_SHA256, min_length=64, max_length=64)
     compaction_state: SessionCompactionState = Field(
         default_factory=SessionCompactionState
     )
@@ -69,18 +72,76 @@ class CheckpointStore:
     def latest_path(self) -> Path:
         return self.checkpoints_dir / LATEST_CHECKPOINT_FILE
 
-    def save(self, checkpoint: RunCheckpoint) -> Path:
+    @property
+    def history_path(self) -> Path:
+        return self.checkpoints_dir.parent / CANONICAL_HISTORY_FILE
+
+    def save(
+        self,
+        checkpoint: RunCheckpoint,
+        *,
+        message_history: list[dict[str, Any]] | None = None,
+    ) -> Path:
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        if message_history is not None:
+            self._save_history(message_history)
+            checkpoint = checkpoint.model_copy(
+                update={
+                    "history_length": len(message_history),
+                    "history_sha256": _history_sha256(message_history),
+                }
+            )
         payload = json.dumps(checkpoint.model_dump(mode="json"), indent=2) + "\n"
-        step_path = self.checkpoints_dir / f"step_{checkpoint.step:04d}.json"
-        step_path.write_text(payload, encoding="utf-8")
-        self.latest_path.write_text(payload, encoding="utf-8")
-        return step_path
+        temporary = self.latest_path.with_suffix(".json.tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        temporary.replace(self.latest_path)
+        return self.latest_path
 
     def load_latest(self) -> RunCheckpoint | None:
         if not self.latest_path.is_file():
             return None
         return RunCheckpoint.model_validate_json(self.latest_path.read_text(encoding="utf-8"))
+
+    def load_history(self, checkpoint: RunCheckpoint) -> list[dict[str, Any]]:
+        if checkpoint.history_length == 0:
+            if checkpoint.history_sha256 != EMPTY_HISTORY_SHA256:
+                raise ValueError("Checkpoint history hash mismatch.")
+            return []
+        if not self.history_path.is_file():
+            raise ValueError("Checkpoint canonical history is missing.")
+        try:
+            payload = json.loads(self.history_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Checkpoint canonical history is invalid.") from exc
+        if not isinstance(payload, list) or len(payload) < checkpoint.history_length:
+            raise ValueError("Checkpoint canonical history is incomplete.")
+        prefix = payload[: checkpoint.history_length]
+        if _history_sha256(prefix) != checkpoint.history_sha256:
+            raise ValueError("Checkpoint history hash mismatch.")
+        return prefix
+
+    def _save_history(self, message_history: list[dict[str, Any]]) -> None:
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            message_history,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ) + "\n"
+        temporary = self.history_path.with_suffix(".json.tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        temporary.replace(self.history_path)
+
+
+def _history_sha256(message_history: list[dict[str, Any]]) -> str:
+    payload = json.dumps(
+        message_history,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def digest_workspace_files(

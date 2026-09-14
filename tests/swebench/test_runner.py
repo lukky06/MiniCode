@@ -347,17 +347,18 @@ def test_runner_resumes_checkpoint_without_readding_user_task(tmp_path: Path) ->
     manager.prepare(instance, source_url=str(source))
     instance_dir = manager.instance_dir(instance.instance_id)
     task = build_task_prompt(instance)
-    CheckpointStore(instance_dir / "checkpoints").save(
+    checkpoint_store = CheckpointStore(instance_dir / "checkpoints")
+    checkpoint_store.save(
         RunCheckpoint(
             run_id="swebench_resume",
             step=1,
             task=task,
             workspace=str(instance_dir / "workspace"),
-            message_history=[{"role": "user", "content": task}],
             model_call_count=1,
             status="running",
             reason="interrupted",
-        )
+        ),
+        message_history=[{"role": "user", "content": task}],
     )
     observed_messages: list[list[dict[str, Any]]] = []
 

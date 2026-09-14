@@ -34,7 +34,6 @@ const backend = new BackendClient({
   sandboxImage: process.env.MINICODE_TUI_SANDBOX_IMAGE,
   skills,
   skillsEnabled: process.env.MINICODE_TUI_NO_SKILLS !== "1",
-  promptCacheEnabled: process.env.MINICODE_TUI_NO_PROMPT_CACHE !== "1",
   projectConventionsEnabled:
     process.env.MINICODE_TUI_NO_PROJECT_CONVENTIONS !== "1",
   subagentsEnabled: process.env.MINICODE_TUI_NO_SUBAGENTS !== "1",

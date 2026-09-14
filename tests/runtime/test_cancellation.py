@@ -100,18 +100,20 @@ def test_cancellation_completes_pending_tool_result_group(tmp_path) -> None:
 
     assert result.status == "cancelled"
     assert result.tool_calls == 2
-    checkpoint = CheckpointStore(trace_path.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
     assert checkpoint.status == "cancelled"
-    assert [message["role"] for message in checkpoint.message_history[-3:]] == [
+    checkpoint_history = checkpoint_store.load_history(checkpoint)
+    assert [message["role"] for message in checkpoint_history[-3:]] == [
         "assistant",
         "tool",
         "tool",
     ]
-    assert checkpoint.message_history[-2]["tool_call_id"] == "call_a"
-    assert checkpoint.message_history[-1]["tool_call_id"] == "call_b"
-    assert "A = 1" in checkpoint.message_history[-2]["content"]
-    assert "B = 2" in checkpoint.message_history[-1]["content"]
+    assert checkpoint_history[-2]["tool_call_id"] == "call_a"
+    assert checkpoint_history[-1]["tool_call_id"] == "call_b"
+    assert "A = 1" in checkpoint_history[-2]["content"]
+    assert "B = 2" in checkpoint_history[-1]["content"]
 
 
 def test_run_command_terminates_process_when_cancelled(tmp_path, monkeypatch) -> None:

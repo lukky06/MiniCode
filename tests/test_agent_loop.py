@@ -236,6 +236,7 @@ def test_agent_loop_carries_native_tool_history_and_minimal_run_state(tmp_path) 
     assert "working_context" not in payload
     assert set(payload["run_state"]) == {"inspected_files", "verification"}
     assert "task_memory" not in payload
+    assert not (trace_path.parent / "artifacts" / "prompts").exists()
 
     trace_events = _trace_events(trace_path)
     event_types = [event["type"] for event in trace_events]
@@ -256,6 +257,7 @@ def test_agent_loop_carries_native_tool_history_and_minimal_run_state(tmp_path) 
     assert context_event["token_estimator_version"] == "mixed-language-v1"
     assert context_event["tool_schema_chars"] > 0
     assert context_event["tool_schema_tokens"] > 0
+    assert "prompt_context_artifact" not in context_event
     assert context_event["largest_tool_schema"]["name"] in context_event["available_tools"]
     assert context_event["largest_tool_schema"]["tokens"] > 0
     calibration = next(
@@ -1287,7 +1289,8 @@ def test_agent_loop_does_not_soft_compact_semantic_only_history_without_summary(
         no_skills=True,
     ).run()
 
-    checkpoint = CheckpointStore(first_trace.parent / "checkpoints").load_latest()
+    checkpoint_store = CheckpointStore(first_trace.parent / "checkpoints")
+    checkpoint = checkpoint_store.load_latest()
     assert result.status == "completed"
     assert len(client.calls) == 1
     assert checkpoint is not None
@@ -1299,7 +1302,7 @@ def test_agent_loop_does_not_soft_compact_semantic_only_history_without_summary(
     )
     assert checkpoint.compaction_state.execution is None
     assert checkpoint.compaction_state.semantic is None
-    assert checkpoint.message_history[:-1] == history
+    assert checkpoint_store.load_history(checkpoint)[:-1] == history
 
 
 def test_default_agent_loop_skips_oversized_semantic_request_and_falls_back(tmp_path) -> None:

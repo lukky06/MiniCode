@@ -66,9 +66,6 @@ def build_suite_summary(
         repeated_read_calls=sum(
             int(result.metrics.get("repeated_read_calls") or 0) for result in results
         ),
-        project_cache_hits=sum(
-            int(result.metrics.get("project_cache_hits") or 0) for result in results
-        ),
         verification_commands=sum(
             int(result.metrics.get("verification_commands") or 0) for result in results
         ),
@@ -139,7 +136,6 @@ def render_suite_report(summary: SweBenchSuiteSummary) -> str:
         f"| Average Agent Time | {summary.avg_elapsed_seconds:.2f}s |",
         f"| Average Evaluation Time | {summary.avg_evaluation_seconds:.2f}s |",
         f"| Repeated Read Calls | {summary.repeated_read_calls} |",
-        f"| Project Cache Hits | {summary.project_cache_hits} |",
         f"| Verification Commands | {summary.verification_commands} |",
         f"| Command Policy Rejections | {summary.command_policy_rejections} |",
         f"| Context Compactions | {summary.context_compactions} |",

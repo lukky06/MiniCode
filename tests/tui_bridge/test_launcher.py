@@ -53,7 +53,6 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
         sandbox_image="python:3.11-slim",
         skills=["reviewer", "handoff"],
         skills_enabled=True,
-        prompt_cache_enabled=False,
         repository_memory_enabled=False,
         subagents_enabled=False,
         mcp_config=tmp_path / "mcp.json",
@@ -74,7 +73,6 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
     assert env["MINICODE_TUI_SANDBOX_IMAGE"] == "python:3.11-slim"
     assert env["MINICODE_TUI_SKILLS"] == '["reviewer", "handoff"]'
     assert env["MINICODE_TUI_NO_WRITE"] == "1"
-    assert env["MINICODE_TUI_NO_PROMPT_CACHE"] == "1"
     assert env["MINICODE_TUI_NO_REPOSITORY_MEMORY"] == "1"
     assert env["MINICODE_TUI_NO_SUBAGENTS"] == "1"
     assert env["MINICODE_TUI_SESSION_MODE"] == "exact"
@@ -113,7 +111,6 @@ def test_launch_tui_runs_packaged_entrypoint_in_workspace(tmp_path, monkeypatch)
         sandbox_image=None,
         skills=None,
         skills_enabled=True,
-        prompt_cache_enabled=True,
         repository_memory_enabled=True,
         subagents_enabled=True,
         mcp_config=None,
