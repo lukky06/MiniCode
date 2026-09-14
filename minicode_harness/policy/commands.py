@@ -599,7 +599,10 @@ def _git_read_rule(argv: list[str]) -> tuple[str, CommandCategory] | None:
     if not argv or _executable_name(argv[0]) != "git" or len(argv) < 2:
         return None
     subcommand = argv[1]
-    if subcommand == "status" and all(arg in {"--short", "--porcelain"} for arg in argv[2:]):
+    if subcommand == "status" and all(
+        arg in {"--short", "--porcelain", "--branch", "-b"}
+        for arg in argv[2:]
+    ):
         return "git status [read-only]", CommandCategory.INFORMATION
     if subcommand == "diff" and all(
         arg in {"--stat", "--name-only", "--cached", "--staged"}

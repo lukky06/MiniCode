@@ -19,6 +19,8 @@ import type { ClientMessage, ServerMessage } from "./protocol.js";
 import { ui } from "./theme.js";
 import { Transcript } from "./transcript.js";
 
+const BOTTOM_DOCK_MIN_ROWS = 4;
+
 export interface MiniCodeTuiOptions {
   terminal?: Terminal;
   onSubmit?: (text: string) => void;
@@ -114,11 +116,14 @@ export class MiniCodeTuiApp {
       overscroll: "contain",
       scrollbar: "auto",
     });
-    const root = new VStack([
-      { component: this.header, basis: "auto" },
-      { component: transcriptView, grow: 1, minSize: 1 },
+    const bottomDock = new VStack([
       { component: this.editor, basis: "auto" },
       { component: this.footer, basis: "auto" },
+    ]);
+    const root = new VStack([
+      { component: this.header, basis: "auto" },
+      { component: transcriptView, basis: 0, grow: 1, minSize: 1 },
+      { component: bottomDock, basis: "auto", shrink: 1, minSize: BOTTOM_DOCK_MIN_ROWS },
     ]);
 
     this.tui.setLayoutRoot(root);
@@ -213,14 +218,14 @@ export class MiniCodeTuiApp {
           "Approval required",
           event.summary ?? event.tool,
         );
-        this.editor.setMode("approval");
-        this.footer.setStatus("Approval required", "warning");
         this.showApproval(event);
+        this.editor.setMode("approval");
+        this.footer.setStatus("Permission required", "warning");
         break;
       case "user_input_required":
+        this.showUserInput(event);
         this.editor.setMode("approval");
         this.footer.setStatus("Input required", "warning");
-        this.showUserInput(event);
         break;
       case "run_finished":
         this.running = false;
@@ -272,10 +277,10 @@ export class MiniCodeTuiApp {
       this.tui.requestRender();
     });
     this.approvalHandle = this.tui.showOverlay(overlay, {
-      anchor: "center",
+      anchor: "bottom-center",
       width: "80%",
-      maxHeight: "80%",
-      margin: 1,
+      maxHeight: "60%",
+      margin: { left: 1, right: 1, bottom: BOTTOM_DOCK_MIN_ROWS },
     });
   }
 

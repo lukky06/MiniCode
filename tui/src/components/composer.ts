@@ -34,7 +34,7 @@ export class Composer extends Editor {
 
     const label =
       this.mode === "approval"
-        ? " Waiting for approval "
+        ? " Permission required "
         : this.mode === "steer"
           ? " Steer MiniCode "
           : " Ask MiniCode ";
@@ -55,7 +55,7 @@ export class Composer extends Editor {
 
     const hint =
       this.mode === "approval"
-        ? " approval overlay owns input "
+        ? " choose in the approval panel "
         : this.mode === "steer"
           ? " Enter steer · Esc cancel "
           : " Enter send · Alt+Enter newline ";

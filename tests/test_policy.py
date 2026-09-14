@@ -280,6 +280,7 @@ def test_run_command_requires_explicit_approval_for_side_effect_command(
     "command",
     [
         ["git", "status"],
+        ["git", "status", "--short", "--branch"],
         ["git", "ls-files"],
         ["git", "ls-files", "src/main/java"],
         ["git", "rev-parse", "HEAD"],

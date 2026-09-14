@@ -9,6 +9,10 @@ import {
 import { MiniCodeTuiApp } from "./app.js";
 import { FakeTerminal } from "./testing/fake-terminal.js";
 
+function latestFrame(terminal: FakeTerminal): string {
+  return stripTerminalSequences(terminal.writes.at(-1) ?? "");
+}
+
 test("fake server events update one transcript and survive resize", () => {
   const terminal = new FakeTerminal(80, 20);
   const app = new MiniCodeTuiApp({ terminal });
@@ -117,6 +121,44 @@ test("T7 product UI exposes project hierarchy, run status, and tool timeline", (
   });
   assert.match(stripTerminalSequences(app.editor.render(96).join("\n")), /Ask MiniCode/);
   assert.match(stripTerminalSequences(app.footer.render(96).join("\n")), /completed/);
+});
+
+test("long multi-turn transcript keeps composer and footer inside the visible frame", () => {
+  const terminal = new FakeTerminal(90, 18);
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+
+  for (let turn = 1; turn <= 3; turn += 1) {
+    app.handleServerEvent({ type: "run_started", run_id: `run_${turn}` });
+    app.handleServerEvent({
+      type: "context",
+      used: 12_000 + turn,
+      window: 100_000,
+      prompt_budget: 80_000,
+      reserved_output: 8_000,
+    });
+    app.handleServerEvent({
+      type: "assistant_delta",
+      text: Array.from({ length: 30 }, (_, index) => `turn ${turn} line ${index}`).join("\n"),
+    });
+    app.handleServerEvent({
+      type: "run_finished",
+      status: "completed",
+      run_id: `run_${turn}`,
+    });
+    app.tui.renderNow(true);
+
+    const frame = latestFrame(terminal);
+    assert.match(frame, /Ask MiniCode/);
+    assert.match(frame, /context 15%/);
+  }
+
+  terminal.resize(64, 12);
+  app.tui.renderNow(true);
+  const resized = latestFrame(terminal);
+  assert.match(resized, /Ask MiniCode/);
+  assert.match(resized, /context 15%/);
+  app.stop();
 });
 
 
@@ -289,10 +331,27 @@ test("approval overlay owns input and returns the exact approval id", () => {
     id: "approval_1",
     tool: "run_command",
     summary: "Run focused tests",
-    details: "{\"risk_level\":\"high\"}",
+    can_approve_session: true,
+    details: JSON.stringify({
+      risk_level: "high",
+      preview: {
+        command: "mvn -q test",
+        reason: "Command needs explicit approval.",
+        effects: ["may create workspace-local test artifacts"],
+      },
+    }),
   });
+  app.tui.renderNow(true);
 
   assert.equal(app.editor.disableSubmit, true);
+  const approvalHandle = (app as any).approvalHandle;
+  const bounds = approvalHandle?.getBounds();
+  assert.ok(bounds);
+  assert.ok(bounds.row + bounds.height >= terminal.rows - 6);
+  assert.ok(bounds.row + bounds.height <= terminal.rows - 3);
+  const approvalFrame = latestFrame(terminal);
+  assert.match(approvalFrame, /ACTION REQUIRED/);
+  assert.match(approvalFrame, /Permission required/);
   terminal.sendInput("y");
 
   assert.deepEqual(messages, [

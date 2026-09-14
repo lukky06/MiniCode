@@ -295,8 +295,8 @@ function buildBackendArgs(options) {
   if (options.skillsEnabled === false) {
     args.push("--no-skills");
   }
-  if (options.repositoryMemoryEnabled === false) {
-    args.push("--no-repository-memory");
+  if (options.projectConventionsEnabled === false) {
+    args.push("--no-project-conventions");
   }
   if (options.subagentsEnabled === false) {
     args.push("--no-subagents");
@@ -12352,7 +12352,7 @@ var Composer = class extends Editor {
       return super.renderTopBorder(width, hiddenLineCount);
     }
     if (width <= 0) return "";
-    const label = this.mode === "approval" ? " Waiting for approval " : this.mode === "steer" ? " Steer MiniCode " : " Ask MiniCode ";
+    const label = this.mode === "approval" ? " Permission required " : this.mode === "steer" ? " Steer MiniCode " : " Ask MiniCode ";
     const styledLabel = this.mode === "approval" ? ui.warning(label) : ui.accentStrong(label);
     const remaining = Math.max(0, width - visibleWidth(label));
     return truncateToWidth(
@@ -12365,7 +12365,7 @@ var Composer = class extends Editor {
       return super.renderBottomBorder(width, hiddenLineCount);
     }
     if (width <= 0) return "";
-    const hint = this.mode === "approval" ? " approval overlay owns input " : this.mode === "steer" ? " Enter steer \xB7 Esc cancel " : " Enter send \xB7 Alt+Enter newline ";
+    const hint = this.mode === "approval" ? " choose in the approval panel " : this.mode === "steer" ? " Enter steer \xB7 Esc cancel " : " Enter send \xB7 Alt+Enter newline ";
     if (visibleWidth(hint) >= width - 2) {
       return this.borderColor("\u2500".repeat(width));
     }
@@ -12547,23 +12547,74 @@ var ApprovalOverlay = class {
     }
   }
   render(width) {
+    const preview = approvalPreview(this.event.details);
     const lines = [
-      `${ui.warning("! Approval required")}  ${ui.muted(this.event.tool)}`,
-      "",
-      this.event.summary || this.event.tool,
+      ui.warning("! ACTION REQUIRED"),
+      ui.bold(approvalAction(this.event.tool)),
       ""
     ];
+    if (preview.command) {
+      lines.push(ui.code(`$ ${preview.command}`), "");
+    } else if (preview.path) {
+      lines.push(ui.code(preview.path), "");
+    } else if (this.event.summary) {
+      lines.push(this.event.summary, "");
+    }
+    if (preview.riskLevel) {
+      lines.push(`${ui.muted("Risk")}    ${ui.warning(preview.riskLevel.toUpperCase())}`);
+    }
+    if (preview.reason) {
+      lines.push(`${ui.muted("Reason")}  ${preview.reason}`);
+    }
+    if (preview.effects.length > 0) {
+      lines.push(ui.muted("Effects"));
+      lines.push(...preview.effects.slice(0, 3).map((effect) => `  - ${effect}`));
+    }
+    if (preview.riskLevel || preview.reason || preview.effects.length > 0) {
+      lines.push("");
+    }
     if (this.showDetails && this.event.details) {
       lines.push(this.event.details, "");
     }
-    const grant = this.event.can_approve_session ? `  ${ui.success("g session")}` : "";
+    const grant = this.event.can_approve_session ? `  ${ui.success("[G] Allow for this session")}` : "";
     lines.push(
-      `${ui.success("y once")}${grant}  ${ui.error("n reject")}  ${ui.muted("s skip \xB7 a abort \xB7 v details")}`
+      `${ui.success("[Y] Allow once")}${grant}  ${ui.error("[N] Reject")}`,
+      ui.muted("[S] Skip \xB7 [A] Abort \xB7 [V] Details")
     );
     this.body.setText(lines.join("\n"));
     return this.body.render(width).map((line) => truncateToWidth(line, Math.max(0, width)));
   }
 };
+function approvalPreview(details) {
+  if (!details) return { effects: [] };
+  try {
+    const raw = JSON.parse(details);
+    if (!isRecord2(raw)) return { effects: [] };
+    const preview = isRecord2(raw.preview) ? raw.preview : {};
+    return {
+      riskLevel: stringValue(raw.risk_level),
+      command: stringValue(preview.command),
+      path: stringValue(preview.path),
+      reason: stringValue(preview.reason),
+      effects: Array.isArray(preview.effects) ? preview.effects.filter((value) => typeof value === "string") : []
+    };
+  } catch {
+    return { effects: [] };
+  }
+}
+function approvalAction(tool) {
+  if (tool === "run_command") return "MiniCode wants to run a command";
+  if (["edit", "write", "apply_patch"].includes(tool)) {
+    return "MiniCode wants to change workspace files";
+  }
+  return "MiniCode requests permission";
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value : void 0;
+}
 
 // src/overlays/user-input.ts
 var UserInputOverlay = class {
@@ -12890,6 +12941,7 @@ var Transcript = class {
 };
 
 // src/app.ts
+var BOTTOM_DOCK_MIN_ROWS = 4;
 var MiniCodeTuiApp = class {
   transcript = new Transcript();
   header;
@@ -12960,11 +13012,14 @@ var MiniCodeTuiApp = class {
       overscroll: "contain",
       scrollbar: "auto"
     });
-    const root = new VStack([
-      { component: this.header, basis: "auto" },
-      { component: transcriptView, grow: 1, minSize: 1 },
+    const bottomDock = new VStack([
       { component: this.editor, basis: "auto" },
       { component: this.footer, basis: "auto" }
+    ]);
+    const root = new VStack([
+      { component: this.header, basis: "auto" },
+      { component: transcriptView, basis: 0, grow: 1, minSize: 1 },
+      { component: bottomDock, basis: "auto", shrink: 1, minSize: BOTTOM_DOCK_MIN_ROWS }
     ]);
     this.tui.setLayoutRoot(root);
     this.tui.setFocus(this.editor);
@@ -13047,14 +13102,14 @@ var MiniCodeTuiApp = class {
           "Approval required",
           event.summary ?? event.tool
         );
-        this.editor.setMode("approval");
-        this.footer.setStatus("Approval required", "warning");
         this.showApproval(event);
+        this.editor.setMode("approval");
+        this.footer.setStatus("Permission required", "warning");
         break;
       case "user_input_required":
+        this.showUserInput(event);
         this.editor.setMode("approval");
         this.footer.setStatus("Input required", "warning");
-        this.showUserInput(event);
         break;
       case "run_finished":
         this.running = false;
@@ -13103,10 +13158,10 @@ var MiniCodeTuiApp = class {
       this.tui.requestRender();
     });
     this.approvalHandle = this.tui.showOverlay(overlay, {
-      anchor: "center",
+      anchor: "bottom-center",
       width: "80%",
-      maxHeight: "80%",
-      margin: 1
+      maxHeight: "60%",
+      margin: { left: 1, right: 1, bottom: BOTTOM_DOCK_MIN_ROWS }
     });
   }
   clearApproval() {
@@ -13219,7 +13274,7 @@ var backend = new BackendClient({
   sandboxImage: process.env.MINICODE_TUI_SANDBOX_IMAGE,
   skills,
   skillsEnabled: process.env.MINICODE_TUI_NO_SKILLS !== "1",
-  repositoryMemoryEnabled: process.env.MINICODE_TUI_NO_REPOSITORY_MEMORY !== "1",
+  projectConventionsEnabled: process.env.MINICODE_TUI_NO_PROJECT_CONVENTIONS !== "1",
   subagentsEnabled: process.env.MINICODE_TUI_NO_SUBAGENTS !== "1",
   mcpConfig: process.env.MINICODE_TUI_MCP_CONFIG,
   sessionMode,
