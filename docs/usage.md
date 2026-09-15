@@ -56,10 +56,11 @@ provider = "deepseek"
 model = "deepseek-chat"
 permission_mode = "workspace-write"
 approval_policy = "on-request"
-sandbox = "local"
+sandbox = "docker"
+sandbox_image = "your-dev-image:latest"
 ```
 
-命令行显式参数优先于用户配置。
+命令行显式参数优先于用户配置。`run_command` 默认进入 Docker；Docker Desktop/daemon 或镜像不可用时会明确失败，不会自动退回宿主机执行。需要本地执行时显式使用 `--sandbox local`，交互 Session 中也可以用 `/sandbox local` 修改后续 Run。
 
 ## 4. 启动交互 Session
 

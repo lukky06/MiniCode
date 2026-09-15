@@ -22,6 +22,8 @@ from minicode_harness.workspace import WorkspaceGuard
 
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
+_PROCESS_CLEANUP_TIMEOUT_SECONDS = 1.0
+_WINDOWS_TREE_KILL_TIMEOUT_SECONDS = 2.0
 
 
 class StaleWriteError(RuntimeError):
@@ -392,6 +394,7 @@ def run_command(
         process = subprocess.Popen(
             resolved_argv,
             cwd=guard.root,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_sanitized_command_environment(),
@@ -504,13 +507,60 @@ def _sanitized_command_environment() -> dict[str, str]:
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
-    if process.poll() is None:
+    if os.name == "nt":
+        _terminate_windows_process_tree(process)
+    elif process.poll() is None:
         process.terminate()
+
     try:
-        return process.communicate(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return process.communicate()
+        return process.communicate(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as first_timeout:
+        if process.poll() is None:
+            process.kill()
+        try:
+            return process.communicate(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as final_timeout:
+            _close_process_pipes(process)
+            try:
+                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            stdout = final_timeout.stdout or first_timeout.stdout or b""
+            stderr = final_timeout.stderr or first_timeout.stderr or b""
+            return stdout, stderr
+
+
+def _terminate_windows_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        process.terminate()
+        return
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_WINDOWS_TREE_KILL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        completed = None
+    if (completed is None or completed.returncode != 0) and process.poll() is None:
+        process.terminate()
+
+
+def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
+    for pipe in (process.stdout, process.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except OSError:
+            pass
 
 
 def _decode_command_output(value: bytes | str | None) -> str:

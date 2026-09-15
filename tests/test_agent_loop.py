@@ -2,7 +2,7 @@ import json
 from io import StringIO
 import os
 import sys
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock, Thread
 from typing import Any
 
 from minicode_harness.context import (
@@ -27,7 +27,7 @@ from minicode_harness.models import (
     ModelUsage,
     NormalizedToolCall,
 )
-from minicode_harness.output import TextOutputSink
+from minicode_harness.output import NullOutputSink, TextOutputSink
 from minicode_harness.trace import TraceWriter
 
 
@@ -173,6 +173,84 @@ def test_same_response_mixed_tools_run_in_parallel_and_keep_result_order(
     started_event = next(event for event in events if event["type"] == "tool_batch_started")
     assert started_event["tools"] == ["read", "search"]
     assert any(event["type"] == "tool_batch_finished" for event in events)
+
+
+def test_parallel_tool_finish_event_is_emitted_before_the_whole_batch_completes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "fast.py").write_text("FAST = 1\n", encoding="utf-8")
+    (workspace / "slow.py").write_text("SLOW = 1\n", encoding="utf-8")
+    trace_path = tmp_path / "parallel-finish" / "trace.jsonl"
+    client = ScriptedModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    NormalizedToolCall(
+                        id="fast",
+                        name="read",
+                        arguments={"source": "workspace", "target": "fast.py"},
+                    ),
+                    NormalizedToolCall(
+                        id="slow",
+                        name="read",
+                        arguments={"source": "workspace", "target": "slow.py"},
+                    ),
+                ]
+            ),
+            ModelResponse(final_text="done"),
+        ]
+    )
+    fast_finished = Event()
+    slow_started = Event()
+    release_slow = Event()
+
+    class FinishSink(NullOutputSink):
+        def tool_call_finished(self, **kwargs) -> None:
+            if kwargs.get("tool_call_id") == "fast":
+                fast_finished.set()
+
+    loop = AgentLoop(
+        task="Read two independent targets",
+        workspace=workspace,
+        model_client=client,
+        trace_writer=TraceWriter(trace_path),
+        memory_store=ProjectMemoryStore(tmp_path / "memory"),
+        no_skills=True,
+        output_sink=FinishSink(),
+    )
+    original_execute = loop.tools.execute_admitted
+
+    def controlled_execute(
+        admission,
+        *,
+        approval_granted=False,
+        expected_file_sha256=None,
+    ):
+        if admission.arguments.get("target") == "slow.py":
+            slow_started.set()
+            assert release_slow.wait(timeout=2)
+        return original_execute(
+            admission,
+            approval_granted=approval_granted,
+            expected_file_sha256=expected_file_sha256,
+        )
+
+    monkeypatch.setattr(loop.tools, "execute_admitted", controlled_execute)
+    result_holder: list[Any] = []
+    worker = Thread(target=lambda: result_holder.append(loop.run()))
+    worker.start()
+    try:
+        assert slow_started.wait(timeout=1)
+        assert fast_finished.wait(timeout=0.5)
+    finally:
+        release_slow.set()
+        worker.join(timeout=3)
+
+    assert not worker.is_alive()
+    assert result_holder[0].status == "completed"
 
 
 def test_agent_loop_carries_native_tool_history_and_minimal_run_state(tmp_path) -> None:

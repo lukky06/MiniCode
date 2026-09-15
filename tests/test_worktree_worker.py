@@ -12,6 +12,7 @@ from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCa
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.runtime_tasks import RuntimeTaskRegistry
 from minicode_harness.trace import TraceWriter
+from minicode_harness.tools import LocalCommandExecutor
 from minicode_harness.worktree_worker import (
     WorktreeWorkerManager,
     WorktreeWorkerResult,
@@ -96,6 +97,42 @@ def test_worker_rejects_dirty_parent_before_creating_worktree(tmp_path: Path) ->
     with pytest.raises(RuntimeError, match="Parent workspace is dirty"):
         manager.start("change app")
     assert GitWorktreeManager(tmp_path / "data").list(repository) == []
+    manager.shutdown()
+
+
+def test_worker_manager_propagates_parent_command_executor(tmp_path: Path, monkeypatch) -> None:
+    repository = _repository(tmp_path / "repo")
+    registry = RuntimeTaskRegistry()
+    worktrees = GitWorktreeManager(tmp_path / "data")
+    command_executor = LocalCommandExecutor()
+    observed = []
+
+    def fake_run(self, task: str) -> WorktreeWorkerResult:
+        del task
+        observed.append(self.tools.command_executor)
+        return WorktreeWorkerResult(
+            status="completed",
+            summary="No change needed.",
+            steps=1,
+            tool_calls=0,
+        )
+
+    monkeypatch.setattr(WorktreeWorkerRunner, "run", fake_run)
+    manager = WorktreeWorkerManager(
+        parent_workspace=repository,
+        run_id="run_executor",
+        model_client=_DummyModel(),
+        registry=registry,
+        artifact_dir=tmp_path / "artifacts",
+        command_executor=command_executor,
+        worktree_manager=worktrees,
+    )
+
+    started = manager.start("inspect app")
+    task = _wait(registry, started["runtime_task_id"])
+
+    assert task["status"] == "completed"
+    assert observed == [command_executor]
     manager.shutdown()
 
 

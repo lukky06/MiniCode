@@ -109,7 +109,8 @@ provider = "deepseek"
 model = "deepseek-chat"
 permission_mode = "workspace-write"
 approval_policy = "on-request"
-sandbox = "local"
+sandbox = "docker"
+sandbox_image = "your-dev-image:latest"
 ```
 
 ## 开发

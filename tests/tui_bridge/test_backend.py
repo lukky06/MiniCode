@@ -25,6 +25,7 @@ from minicode_harness.terminal.types import (
     TerminalContext,
     TerminalSessionSettings,
 )
+from minicode_harness.tools import SandboxMode
 import minicode_harness.tui_bridge.backend as backend_module
 from minicode_harness.tui_bridge.approval import JsonlApprovalClient
 from minicode_harness.tui_bridge.user_input import JsonlUserInputClient
@@ -244,8 +245,9 @@ def test_backend_session_start_emits_command_catalog(tmp_path: Path) -> None:
         "session_settings",
     ]
     catalog = events[1]
-    assert [item.name for item in catalog.commands[:3]] == [
+    assert [item.name for item in catalog.commands[:4]] == [
         "permissions",
+        "sandbox",
         "plan",
         "diff",
     ]
@@ -296,6 +298,37 @@ def test_built_backend_permission_command_changes_next_run_defaults(tmp_path: Pa
     assert initial.approval_policy.value == "on-request"
     assert updated.permission_mode.value == "workspace-write"
     assert updated.approval_policy.value == "never"
+
+
+def test_built_backend_sandbox_command_changes_next_run_defaults(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-sandbox-settings"
+    workspace.mkdir()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--provider",
+            "test",
+            "--sandbox-mode",
+            "docker",
+            "--sandbox-image",
+            "minicode-sandbox:latest",
+        ]
+    )
+    backend = _build_backend(args, output_sink=sink)
+
+    initial = backend.request_factory("before")
+    backend.handle_message(CommandMessage(text="/sandbox local"))
+    _wait_for_event_type(stream, "panel")
+    updated = backend.request_factory("after")
+    backend.close(timeout=1.0)
+
+    assert initial.sandbox_mode == SandboxMode.DOCKER
+    assert initial.sandbox_image == "minicode-sandbox:latest"
+    assert updated.sandbox_mode == SandboxMode.LOCAL
+    assert updated.sandbox_image is None
 
 
 def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path: Path) -> None:
@@ -494,6 +527,54 @@ def test_plan_command_changes_collaboration_mode_for_next_run(tmp_path: Path) ->
     assert executor.started.wait(1.0)
     assert executor.request is not None
     assert executor.request.collaboration_mode == CollaborationMode.PLAN
+
+    executor.release.set()
+    backend.close(timeout=1.0)
+
+
+def test_sandbox_command_changes_command_executor_for_next_run(tmp_path: Path) -> None:
+    executor = BlockingExecutor()
+    backend, _, stream = _backend(executor)
+    settings = TerminalSessionSettings(
+        sandbox_mode=SandboxMode.DOCKER,
+        sandbox_image="minicode-sandbox:latest",
+    )
+    backend.command_router = SlashCommandRouter()
+    backend.command_context = TerminalContext(
+        workspace=tmp_path,
+        provider="test",
+        model=None,
+        write_enabled=True,
+        repository_memory_enabled=True,
+        subagents_enabled=True,
+        mcp_config=None,
+        output_sink=NullOutputSink(),
+        approval_client=StaticApprovalClient(),
+        run_store=RunStore(tmp_path / "runs"),
+        sandbox_mode=SandboxMode.DOCKER,
+        sandbox_image="minicode-sandbox:latest",
+        session_settings=settings,
+    )
+    backend.request_factory = lambda task: RunExecutionRequest(
+        task=task,
+        workspace=tmp_path,
+        dry_run=True,
+        sandbox_mode=settings.sandbox_mode,
+        sandbox_image=(
+            settings.sandbox_image
+            if settings.sandbox_mode == SandboxMode.DOCKER
+            else None
+        ),
+    )
+
+    backend.handle_message(CommandMessage(text="/sandbox local"))
+    _wait_for_event_type(stream, "panel")
+    backend.handle_message(TaskMessage(text="inspect locally"))
+
+    assert executor.started.wait(1.0)
+    assert executor.request is not None
+    assert executor.request.sandbox_mode == SandboxMode.LOCAL
+    assert executor.request.sandbox_image is None
 
     executor.release.set()
     backend.close(timeout=1.0)

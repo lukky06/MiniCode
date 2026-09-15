@@ -16,10 +16,21 @@ from minicode_harness.tools import (
 import minicode_harness.tools.command_executor as command_executor_module
 
 
-def test_command_executor_factory_keeps_sandbox_choice_explicit() -> None:
+def test_command_executor_factory_keeps_sandbox_choice_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker_checks: list[list[str]] = []
+
+    def docker_ready(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        docker_checks.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, "ready\n", "")
+
+    monkeypatch.setattr(command_executor_module.subprocess, "run", docker_ready)
+
     local = create_command_executor(SandboxMode.LOCAL)
     assert isinstance(local, LocalCommandExecutor)
     assert local.sandboxed is False
+    assert docker_checks == []
 
     docker = create_command_executor(
         SandboxMode.DOCKER,
@@ -27,12 +38,48 @@ def test_command_executor_factory_keeps_sandbox_choice_explicit() -> None:
     )
     assert isinstance(docker, DockerCommandExecutor)
     assert docker.sandboxed is True
+    assert docker_checks == [
+        ["docker", "version", "--format", "{{.Server.Version}}"],
+        ["docker", "image", "inspect", "python:3.11-slim"],
+    ]
 
 
 def test_docker_sandbox_requires_an_explicit_image() -> None:
     with pytest.raises(ValueError, match="Docker sandbox requires an image"):
         create_command_executor(SandboxMode.DOCKER)
 
+
+def test_docker_factory_fails_fast_when_daemon_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def daemon_down(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(arguments, 1, "", "daemon unavailable")
+
+    monkeypatch.setattr(command_executor_module.subprocess, "run", daemon_down)
+
+    with pytest.raises(RuntimeError, match="Start Docker Desktop.*--sandbox local"):
+        create_command_executor(SandboxMode.DOCKER, image="python:3.11-slim")
+
+
+def test_docker_factory_refuses_missing_local_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def image_missing(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            arguments,
+            0 if calls == 1 else 1,
+            "29.2.1\n" if calls == 1 else "",
+            "" if calls == 1 else "No such image",
+        )
+
+    monkeypatch.setattr(command_executor_module.subprocess, "run", image_missing)
+
+    with pytest.raises(RuntimeError, match="not available locally.*--sandbox local"):
+        create_command_executor(SandboxMode.DOCKER, image="python:3.11-slim")
 
 
 class FakeDockerProcess:
@@ -140,11 +187,12 @@ def test_docker_executor_builds_workspace_only_restricted_invocation(
     assert result.argv == ["python", "-m", "pytest", "-q"]
     assert result.allowlist_rule == "python -m pytest [focused args]"
     assert captured["kwargs"]["shell"] is False
-    assert arguments[:3] == ["docker", "run", "--rm"]
-    assert arguments[3] == "--cidfile"
-    assert Path(arguments[4]).name == "container.cid"
-    assert arguments[5:8] == ["--network", "none", "--read-only"]
-    assert arguments[8:16] == [
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert arguments[:5] == ["docker", "run", "--rm", "--pull", "never"]
+    assert arguments[5] == "--cidfile"
+    assert Path(arguments[6]).name == "container.cid"
+    assert arguments[7:10] == ["--network", "none", "--read-only"]
+    assert arguments[10:18] == [
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -372,6 +420,61 @@ def test_docker_timeout_reports_cleanup_failure_and_container_risk(
     assert "container may still be running" in result.stderr
     assert "stop: daemon unavailable" in result.stderr
     assert "remove: daemon unavailable" in result.stderr
+
+
+def test_docker_client_cleanup_never_uses_unbounded_communicate() -> None:
+    class Pipe:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class StuckProcess:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.stdout = Pipe()
+            self.stderr = Pipe()
+            self.timeouts: list[float | None] = []
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_timeouts: list[float | None] = []
+
+        def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+            self.timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(
+                "docker",
+                timeout or 0,
+                output=b"partial",
+                stderr=b"diagnostic",
+            )
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("docker", timeout or 0)
+
+    process = StuckProcess()
+
+    stdout, stderr = command_executor_module._terminate_docker_process(process)
+
+    assert stdout == b"partial"
+    assert stderr == b"diagnostic"
+    assert process.timeouts == [1.0, 1.0]
+    assert process.wait_timeouts == [1.0]
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
 
 
 def test_docker_timeout_kills_client_when_terminate_does_not_finish(

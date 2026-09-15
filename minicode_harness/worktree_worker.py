@@ -27,7 +27,7 @@ from minicode_harness.runtime.runtime_tasks import (
     RuntimeTaskRegistry,
 )
 from minicode_harness.subagent import build_subagent_token_budget
-from minicode_harness.tools import ToolRegistry
+from minicode_harness.tools import CommandExecutor, ToolRegistry
 from minicode_harness.trace import TraceWriter
 from minicode_harness.worktrees import GitWorktreeManager, WorktreeManifest
 
@@ -53,6 +53,7 @@ class WorktreeWorkerRunner:
         trace_writer: TraceWriter,
         artifact_dir: Path | str,
         cancellation_token: CancellationToken,
+        command_executor: CommandExecutor | None = None,
         recovery_policy: ModelRecoveryPolicy | None = None,
         max_steps: int = 12,
         max_tool_calls: int = 24,
@@ -78,6 +79,7 @@ class WorktreeWorkerRunner:
             mcp_manager=None,
             subagent_handler=None,
             cancellation_token=self.cancellation_token,
+            command_executor=command_executor,
         )
         self.preparer = ContextPreparer(
             build_subagent_token_budget(self.model_client),
@@ -258,6 +260,7 @@ class WorktreeWorkerManager:
         model_client: ModelClient,
         registry: RuntimeTaskRegistry,
         artifact_dir: Path | str,
+        command_executor: CommandExecutor | None = None,
         recovery_policy: ModelRecoveryPolicy | None = None,
         worktree_manager: GitWorktreeManager | None = None,
         max_workers: int = 2,
@@ -268,6 +271,7 @@ class WorktreeWorkerManager:
         self.registry = registry
         self.artifact_dir = Path(artifact_dir)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.command_executor = command_executor
         self.recovery_policy = recovery_policy or ModelRecoveryPolicy()
         self.worktree_manager = worktree_manager or GitWorktreeManager()
         self.max_workers = max_workers
@@ -352,6 +356,7 @@ class WorktreeWorkerManager:
                 trace_writer=worker_trace,
                 artifact_dir=worker_dir / "artifacts",
                 cancellation_token=cancellation,
+                command_executor=self.command_executor,
                 recovery_policy=self.recovery_policy,
             ).run(task)
             status = self.worktree_manager.inspect(manifest)

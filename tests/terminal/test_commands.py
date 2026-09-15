@@ -14,6 +14,7 @@ from minicode_harness.terminal import commands as terminal_commands
 from minicode_harness.terminal.commands import SlashCommandRouter, parse_slash_command
 from minicode_harness.terminal.types import TerminalContext, TerminalSessionSettings
 from minicode_harness.trace import TraceWriter
+from minicode_harness.tools import SandboxMode
 
 
 def _context(tmp_path: Path, *, executor=None) -> TerminalContext:
@@ -57,6 +58,7 @@ def test_router_handles_status_model_permissions_and_plan(tmp_path) -> None:
     status = router.execute(parse_slash_command("/status"), context)
     model = router.execute(parse_slash_command("/model"), context)
     permissions = router.execute(parse_slash_command("/permissions"), context)
+    sandbox_status = router.execute(parse_slash_command("/sandbox status"), context)
     plan_status = router.execute(parse_slash_command("/plan"), context)
     plan_on = router.execute(parse_slash_command("/plan on"), context)
     plan_status_on = router.execute(parse_slash_command("/plan status"), context)
@@ -69,6 +71,7 @@ def test_router_handles_status_model_permissions_and_plan(tmp_path) -> None:
     assert "Permission mode: read-only" in (permissions.content or "")
     assert "Approval policy: on-request" in (permissions.content or "")
     assert "Command sandbox: local" in (permissions.content or "")
+    assert "Command sandbox: local" in (sandbox_status.content or "")
     assert "Plan mode: off" in (plan_status.content or "")
     assert "enabled for subsequent Runs" in (plan_on.content or "")
     assert "Next Run mode: plan" in (plan_status_on.content or "")
@@ -81,13 +84,14 @@ def test_command_catalog_is_ordered_and_exposes_argument_choices() -> None:
 
     assert [item.name for item in catalog[:6]] == [
         "permissions",
+        "sandbox",
         "plan",
         "diff",
         "review",
         "context",
-        "compact",
     ]
     permissions = next(item for item in catalog if item.name == "permissions")
+    sandbox = next(item for item in catalog if item.name == "sandbox")
     assert permissions.argument_hint == "[mode <value> | approval <value>]"
     assert permissions.argument_choices == (
         "mode read-only",
@@ -97,6 +101,53 @@ def test_command_catalog_is_ordered_and_exposes_argument_choices() -> None:
         "approval never",
     )
     assert permissions.availability == "idle"
+    assert sandbox.argument_hint == "[status|local|docker [image]]"
+    assert sandbox.argument_choices == ("status", "local", "docker")
+
+
+def test_sandbox_command_updates_next_run_without_touching_current_run(tmp_path) -> None:
+    settings = TerminalSessionSettings(
+        sandbox_mode=SandboxMode.DOCKER,
+        sandbox_image="minicode-sandbox:latest",
+    )
+    base = _context(tmp_path)
+    context = TerminalContext(
+        **{
+            **base.__dict__,
+            "sandbox_mode": SandboxMode.DOCKER,
+            "sandbox_image": "minicode-sandbox:latest",
+            "session_settings": settings,
+        }
+    )
+    router = SlashCommandRouter()
+
+    local = router.execute(parse_slash_command("/sandbox local"), context)
+    status_local = router.execute(parse_slash_command("/sandbox status"), context)
+    local_mode = settings.sandbox_mode
+    docker = router.execute(
+        parse_slash_command("/sandbox docker python:3.12-slim"),
+        context,
+    )
+    status_docker = router.execute(parse_slash_command("/sandbox status"), context)
+
+    assert local.status == "completed"
+    assert local_mode == SandboxMode.LOCAL
+    assert "Command sandbox: local" in (status_local.content or "")
+    assert docker.status == "completed"
+    assert settings.sandbox_mode == SandboxMode.DOCKER
+    assert settings.sandbox_image == "python:3.12-slim"
+    assert "Command sandbox: docker" in (status_docker.content or "")
+    assert "Sandbox image: python:3.12-slim" in (status_docker.content or "")
+    assert context.sandbox_mode == SandboxMode.DOCKER
+    assert context.sandbox_image == "minicode-sandbox:latest"
+
+
+def test_sandbox_command_requires_image_when_switching_to_docker(tmp_path) -> None:
+    context = _context(tmp_path)
+    result = SlashCommandRouter().execute(parse_slash_command("/sandbox docker"), context)
+
+    assert result.status == "failed"
+    assert "requires an image" in (result.content or "")
 
 
 def test_permissions_command_updates_session_defaults_for_subsequent_runs(tmp_path) -> None:

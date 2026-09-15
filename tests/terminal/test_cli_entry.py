@@ -35,7 +35,7 @@ def test_no_argument_main_starts_terminal_when_stdin_and_stdout_are_tty(
     monkeypatch.delenv("MINICODE_PROVIDER", raising=False)
     monkeypatch.delenv("MINICODE_MODEL", raising=False)
     monkeypatch.setattr(cli, "launch_tui", lambda **kwargs: calls.update(kwargs=kwargs))
-    monkeypatch.setattr(cli.sys, "argv", ["minicode"])
+    monkeypatch.setattr(cli.sys, "argv", ["minicode", "--sandbox", "local"])
     monkeypatch.setattr(cli.sys, "stdin", FakeTTY())
     monkeypatch.setattr(cli.sys, "stdout", FakeTTY())
 
@@ -55,7 +55,11 @@ def test_continue_main_starts_latest_terminal_session(tmp_path, monkeypatch) -> 
     calls = {}
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "launch_tui", lambda **kwargs: calls.update(kwargs=kwargs))
-    monkeypatch.setattr(cli.sys, "argv", ["minicode", "--continue"])
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        ["minicode", "--continue", "--sandbox", "local"],
+    )
     monkeypatch.setattr(cli.sys, "stdin", FakeTTY())
     monkeypatch.setattr(cli.sys, "stdout", FakeTTY())
 
@@ -72,7 +76,14 @@ def test_resume_command_opens_exact_conversation_session(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         cli.sys,
         "argv",
-        ["minicode", "resume", "session_abcdef123456", "--no-write"],
+        [
+            "minicode",
+            "resume",
+            "session_abcdef123456",
+            "--no-write",
+            "--sandbox",
+            "local",
+        ],
     )
     monkeypatch.setattr(cli.sys, "stdin", FakeTTY())
     monkeypatch.setattr(cli.sys, "stdout", FakeTTY())
@@ -114,6 +125,8 @@ def test_bare_task_main_starts_interactive_session_with_options(
             "--mode",
             "plan",
             "--no-subagents",
+            "--sandbox",
+            "local",
         ],
     )
     monkeypatch.setattr(cli.sys, "stdin", FakeTTY())

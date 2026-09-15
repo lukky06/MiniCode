@@ -175,10 +175,7 @@ def resolve_command_session_grant(
     if executable is None:
         return None
 
-    if policy.category == CommandCategory.GIT_HISTORY and len(policy.argv) >= 2:
-        scope = ["git_history", policy.argv[1]]
-    else:
-        scope = ["exact", *policy.argv[1:]]
+    scope = ["exact", *policy.argv[1:]]
     payload = json.dumps(
         [executable, policy.category.value, *scope],
         ensure_ascii=False,
@@ -615,6 +612,14 @@ def _git_read_rule(argv: list[str]) -> tuple[str, CommandCategory] | None:
         return "git ls-files [read-only]", CommandCategory.INFORMATION
     if subcommand == "rev-parse":
         return "git rev-parse [read-only]", CommandCategory.INFORMATION
+    if subcommand in {"log", "show", "blame", "cat-file", "ls-tree"}:
+        if any(arg == "--output" or arg.startswith("--output=") for arg in argv[2:]):
+            return None
+        return f"git {subcommand} [read-only]", CommandCategory.INFORMATION
+    if subcommand == "reflog" and (
+        len(argv) == 2 or argv[2] in {"show", "exists"}
+    ):
+        return "git reflog [read-only]", CommandCategory.INFORMATION
     return None
 
 
@@ -673,6 +678,18 @@ def _approval_category(
         )
 
     if executable == "git" and len(argv) >= 2:
+        if argv[1] == "reflog" and len(argv) >= 3 and argv[2] in {
+            "expire",
+            "delete",
+            "write",
+            "drop",
+        }:
+            return (
+                CommandCategory.GIT_MUTATION,
+                f"git reflog {argv[2]}",
+                ["modifies repository reflog state"],
+                "Git reflog mutations require approval.",
+            )
         if argv[1] in {
             "log",
             "show",
@@ -684,8 +701,8 @@ def _approval_category(
             return (
                 CommandCategory.GIT_HISTORY,
                 f"git {argv[1]}",
-                ["reads repository history or object data"],
-                "Repository-history inspection can expose future fixes or benchmark answers and requires approval.",
+                ["may write output or use a non-read-only history mode"],
+                "This Git history invocation is outside the read-only inspection policy and requires approval.",
             )
         if argv[1] in {
             "add",

@@ -87,6 +87,7 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
                 'permission_mode = "workspace-write"',
                 'approval_policy = "never"',
                 'sandbox = "docker"',
+                'sandbox_image = "python:3.12"',
             ]
         )
         + "\n",
@@ -94,7 +95,6 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
     )
     config = load_user_config(config_path)
     monkeypatch.setattr(cli_module, "_load_user_config", lambda: config)
-    monkeypatch.setenv("MINICODE_SANDBOX_IMAGE", "python:3.12")
     captured = {}
     monkeypatch.setattr(
         cli_module,
@@ -120,9 +120,11 @@ def test_user_config_precedence_keeps_cli_and_environment_above_file(monkeypatch
         permission_mode="workspace-write",
         approval_policy="never",
         sandbox="docker",
+        sandbox_image="config-image:latest",
     )
     monkeypatch.setenv("MINICODE_PROVIDER", "ollama")
     monkeypatch.setenv("MINICODE_MODEL", "env-model")
+    monkeypatch.setenv("MINICODE_SANDBOX_IMAGE", "env-image:latest")
 
     assert cli_module._resolve_provider(None, config=config) == "ollama"
     assert cli_module._resolve_provider("openai", config=config) == "openai"
@@ -137,6 +139,43 @@ def test_user_config_precedence_keeps_cli_and_environment_above_file(monkeypatch
         == "on-request"
     )
     assert cli_module._resolve_sandbox_mode("local", config=config).value == "local"
+    assert (
+        cli_module._resolve_sandbox_image(
+            cli_module.SandboxMode.DOCKER,
+            None,
+            config=config,
+        )
+        == "env-image:latest"
+    )
+    assert (
+        cli_module._resolve_sandbox_image(
+            cli_module.SandboxMode.DOCKER,
+            "cli-image:latest",
+            config=config,
+        )
+        == "cli-image:latest"
+    )
+
+
+def test_code_default_uses_docker_and_requires_configured_image(monkeypatch) -> None:
+    monkeypatch.delenv("MINICODE_SANDBOX_IMAGE", raising=False)
+    config = UserConfig()
+
+    assert cli_module._resolve_sandbox_mode(None, config=config).value == "docker"
+    with pytest.raises(ValueError, match="Docker is the default command sandbox"):
+        cli_module._resolve_sandbox_image(
+            cli_module.SandboxMode.DOCKER,
+            None,
+            config=config,
+        )
+    assert (
+        cli_module._resolve_sandbox_image(
+            cli_module.SandboxMode.LOCAL,
+            None,
+            config=config,
+        )
+        is None
+    )
 
 
 def test_user_config_rejects_unknown_fields(tmp_path) -> None:

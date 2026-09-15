@@ -81,6 +81,8 @@ class TerminalSessionSettings:
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
     permission_mode: PermissionMode = PermissionMode.READ_ONLY
     approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
+    sandbox_mode: SandboxMode = SandboxMode.LOCAL
+    sandbox_image: str | None = None
 
 
 @dataclass(frozen=True)

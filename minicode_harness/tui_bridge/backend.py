@@ -393,7 +393,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sandbox-mode",
         choices=tuple(item.value for item in SandboxMode),
-        default=SandboxMode.LOCAL.value,
+        default=SandboxMode.DOCKER.value,
     )
     parser.add_argument("--sandbox-image")
     parser.add_argument("--no-write", action="store_true")
@@ -452,6 +452,8 @@ def _build_backend(
         collaboration_mode=CollaborationMode(args.mode),
         permission_mode=PermissionMode(args.permission_mode),
         approval_policy=ApprovalPolicy(args.approval_policy),
+        sandbox_mode=SandboxMode(args.sandbox_mode),
+        sandbox_image=args.sandbox_image,
     )
 
     def request_factory(task: str) -> RunExecutionRequest:
@@ -463,8 +465,12 @@ def _build_backend(
             write_enabled=not args.no_write,
             approval_policy=session_settings.approval_policy,
             permission_mode=session_settings.permission_mode,
-            sandbox_mode=SandboxMode(args.sandbox_mode),
-            sandbox_image=args.sandbox_image,
+            sandbox_mode=session_settings.sandbox_mode,
+            sandbox_image=(
+                session_settings.sandbox_image
+                if session_settings.sandbox_mode == SandboxMode.DOCKER
+                else None
+            ),
             collaboration_mode=session_settings.collaboration_mode,
             skills=args.skill,
             skills_enabled=not args.no_skills,

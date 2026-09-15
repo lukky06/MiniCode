@@ -26,7 +26,7 @@ from minicode_harness.terminal.status import (
     render_terminal_status,
 )
 from minicode_harness.terminal.types import CommandResult, SlashCommand, TerminalContext
-from minicode_harness.tools import inspect_git_diff
+from minicode_harness.tools import SandboxMode, inspect_git_diff
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,12 @@ _COMMAND_SPECS = (
             "approval on-request",
             "approval never",
         ),
+    ),
+    CommandSpec(
+        "sandbox",
+        "Set command sandbox for subsequent Runs",
+        "[status|local|docker [image]]",
+        ("status", "local", "docker"),
     ),
     CommandSpec("plan", "Set planning mode", "[on|off|status]", ("on", "off", "status")),
     CommandSpec("diff", "Show current workspace diff"),
@@ -147,6 +153,8 @@ class SlashCommandRouter:
             return self._plan_mode(command, context)
         if command.name == "permissions":
             return self._permissions(command, context)
+        if command.name == "sandbox":
+            return self._sandbox(command, context)
         if command.name == "rename":
             if context.executor is None or context.executor.session_memory is None:
                 return CommandResult(
@@ -411,10 +419,10 @@ class SlashCommandRouter:
                         f"Write tools enabled: {context.write_enabled}",
                         f"Permission mode: {settings.permission_mode.value}",
                         f"Approval policy: {settings.approval_policy.value}",
-                        f"Command sandbox: {context.sandbox_mode.value}",
+                        f"Command sandbox: {settings.sandbox_mode.value}",
                         *(
-                            [f"Sandbox image: {context.sandbox_image}"]
-                            if context.sandbox_image
+                            [f"Sandbox image: {settings.sandbox_image}"]
+                            if settings.sandbox_image
                             else []
                         ),
                         f"Repository Memory: {context.repository_memory_enabled}",
@@ -451,6 +459,50 @@ class SlashCommandRouter:
         raise ValueError(
             "/permissions accepts: status, mode <value>, or approval <value>."
         )
+
+    @staticmethod
+    def _sandbox(
+        command: SlashCommand,
+        context: TerminalContext,
+    ) -> CommandResult:
+        if len(command.arguments) > 2:
+            raise ValueError("/sandbox accepts: status, local, or docker [image].")
+        settings = context.session_settings
+        action = command.arguments[0].strip().lower() if command.arguments else "status"
+        image = command.arguments[1].strip() if len(command.arguments) == 2 else None
+
+        if action == "status":
+            if image is not None:
+                raise ValueError("/sandbox status does not accept an image.")
+            lines = [f"Command sandbox: {settings.sandbox_mode.value}"]
+            if settings.sandbox_image:
+                lines.append(f"Sandbox image: {settings.sandbox_image}")
+            return CommandResult(status="completed", content="\n".join(lines))
+        if action == "local":
+            if image is not None:
+                raise ValueError("/sandbox local does not accept an image.")
+            settings.sandbox_mode = SandboxMode.LOCAL
+            return CommandResult(
+                status="completed",
+                content="Command sandbox set to local for subsequent Runs.",
+            )
+        if action == "docker":
+            if image:
+                settings.sandbox_image = image
+            if not settings.sandbox_image:
+                raise ValueError(
+                    "/sandbox docker requires an image the first time, for example: "
+                    "/sandbox docker your-dev-image:latest"
+                )
+            settings.sandbox_mode = SandboxMode.DOCKER
+            return CommandResult(
+                status="completed",
+                content=(
+                    "Command sandbox set to docker for subsequent Runs.\n"
+                    f"Sandbox image: {settings.sandbox_image}"
+                ),
+            )
+        raise ValueError("/sandbox accepts: status, local, or docker [image].")
 
     @staticmethod
     def _plan_mode(

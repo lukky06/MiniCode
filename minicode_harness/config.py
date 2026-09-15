@@ -21,8 +21,9 @@ class UserConfig(BaseModel):
     permission_mode: PermissionMode | None = None
     approval_policy: ApprovalPolicy | None = None
     sandbox: SandboxMode | None = None
+    sandbox_image: str | None = None
 
-    @field_validator("provider", "model")
+    @field_validator("provider", "model", "sandbox_image")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:

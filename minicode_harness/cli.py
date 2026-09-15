@@ -253,6 +253,8 @@ def exec_command(
         resolved_sandbox_image = _resolve_sandbox_image(
             resolved_sandbox,
             sandbox_image,
+            config=user_config,
+            required=not dry_run,
         )
     except ValueError as exc:
         typer.echo(f"Runtime configuration error: {exc}", err=True)
@@ -1224,6 +1226,7 @@ def _run_terminal(launch: InteractiveLaunch) -> None:
         sandbox_image=_resolve_sandbox_image(
             sandbox_mode,
             launch.sandbox_image,
+            config=user_config,
         ),
         collaboration_mode=launch.collaboration_mode.value,
         skills=_parse_skill_names(launch.skills),
@@ -1321,7 +1324,7 @@ def _main_help(program_name: str) -> str:
             "  exec only: --dry-run, --debug-trace, --plain",
             "",
             "User defaults:",
-            "  ~/.minicode/config.toml  provider, model, permission_mode, approval_policy, sandbox",
+            "  ~/.minicode/config.toml  provider, model, permission_mode, approval_policy, sandbox, sandbox_image",
             "  precedence: CLI > existing environment defaults > user config > code defaults",
             "",
             "Environment defaults:",
@@ -1363,7 +1366,7 @@ def _parse_permission_mode(value: str | None) -> PermissionMode:
 
 def _parse_sandbox_mode(value: str | None) -> SandboxMode:
     if value is None:
-        return SandboxMode.LOCAL
+        return SandboxMode.DOCKER
     try:
         return SandboxMode(value.strip().lower())
     except ValueError as exc:
@@ -1451,13 +1454,24 @@ def _resolve_model(
 def _resolve_sandbox_image(
     mode: SandboxMode,
     value: str | None,
+    *,
+    config: UserConfig | None = None,
+    required: bool = True,
 ) -> str | None:
     if mode == SandboxMode.LOCAL:
         return None
-    resolved = value or os.environ.get("MINICODE_SANDBOX_IMAGE")
+    resolved = (
+        value
+        or os.environ.get("MINICODE_SANDBOX_IMAGE")
+        or getattr(config, "sandbox_image", None)
+    )
     if resolved is None or not resolved.strip():
+        if not required:
+            return None
         raise ValueError(
-            "Docker sandbox requires --sandbox-image or MINICODE_SANDBOX_IMAGE."
+            "Docker is the default command sandbox. Configure sandbox_image in "
+            "~/.minicode/config.toml, pass --sandbox-image, set "
+            "MINICODE_SANDBOX_IMAGE, or use --sandbox local explicitly."
         )
     return resolved.strip()
 

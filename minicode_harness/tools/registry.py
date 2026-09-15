@@ -602,9 +602,15 @@ class ToolRegistry:
                 }
             )
         if enable_write and enable_command:
+            command_description = render_command_policy_for_prompt()
+            if self.command_executor.sandboxed:
+                command_description += (
+                    " Commands run inside an isolated Linux Docker container with "
+                    "the repository mounted at /workspace; use container-compatible executables."
+                )
             self._tools["run_command"] = ToolDefinition(
                 name="run_command",
-                description=render_command_policy_for_prompt(),
+                description=command_description,
                 args_model=RunCommandArgs,
                 handler=lambda args: (
                     self.background_command_manager.start(

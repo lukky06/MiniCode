@@ -180,6 +180,7 @@ def build_agent_components(
         model_client=model_client,
         registry=runtime_task_registry,
         artifact_dir=artifact_dir,
+        command_executor=effective_command_executor,
         recovery_policy=resolved_recovery,
     )
     task_store = TaskStore(initial_task_state)

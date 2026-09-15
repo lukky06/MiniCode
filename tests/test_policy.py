@@ -1,6 +1,8 @@
 import shlex
 import shutil
+import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -23,7 +25,9 @@ from minicode_harness.tools.write_tools import (
     _decode_command_output,
     _resolve_command_argv,
     _sanitized_command_environment,
+    _terminate_process,
 )
+import minicode_harness.tools.write_tools as write_tools_module
 from minicode_harness.workspace import WorkspaceAccessError
 
 
@@ -95,18 +99,12 @@ def test_session_grant_scopes_interpreter_payload_to_exact_argv(tmp_path) -> Non
     assert first != second
 
 
-def test_session_grant_reuses_only_the_same_git_history_family(tmp_path) -> None:
+def test_read_only_git_history_does_not_create_session_grant(tmp_path) -> None:
     if shutil.which("git") is None:
         pytest.skip("git is required for executable identity resolution")
 
-    first_show = resolve_command_session_grant(tmp_path, ["git", "show", "HEAD"])
-    second_show = resolve_command_session_grant(tmp_path, ["git", "show", "HEAD~1"])
-    git_log = resolve_command_session_grant(tmp_path, ["git", "log", "-1"])
-
-    assert first_show is not None
-    assert first_show == second_show
-    assert git_log is not None
-    assert first_show != git_log
+    assert resolve_command_session_grant(tmp_path, ["git", "show", "HEAD"]) is None
+    assert resolve_command_session_grant(tmp_path, ["git", "log", "-1"]) is None
 
 
 @pytest.mark.parametrize(
@@ -122,7 +120,8 @@ def test_session_grant_reuses_only_the_same_git_history_family(tmp_path) -> None
         ),
         ("mvn package", CommandCategory.UNKNOWN),
         ("git commit -m fix", CommandCategory.GIT_MUTATION),
-        ("git show HEAD", CommandCategory.GIT_HISTORY),
+        ("git log --output=history.txt -1", CommandCategory.GIT_HISTORY),
+        ("git reflog expire --all", CommandCategory.GIT_MUTATION),
     ],
 )
 def test_command_policy_routes_side_effects_to_approval(
@@ -286,6 +285,12 @@ def test_run_command_requires_explicit_approval_for_side_effect_command(
         ["git", "ls-files", "src/main/java"],
         ["git", "rev-parse", "HEAD"],
         ["git", "rev-parse", "--show-toplevel"],
+        ["git", "log", "--oneline", "-30"],
+        ["git", "show", "HEAD"],
+        ["git", "blame", "README.md"],
+        ["git", "cat-file", "-p", "HEAD"],
+        ["git", "ls-tree", "HEAD"],
+        ["git", "reflog", "show", "HEAD"],
     ],
 )
 def test_command_policy_allows_read_only_git_inspection_without_approval(command) -> None:
@@ -321,6 +326,128 @@ def test_run_command_allows_read_only_git_inspection_without_approval(tmp_path) 
 
     assert result.returncode != 0
     assert "not a git repository" in result.stderr.lower()
+
+
+def test_run_command_isolates_child_stdin(tmp_path, monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class CompletedProcess:
+        returncode = 0
+        pid = 123
+
+        def communicate(self, timeout=None):
+            return b"ok\n", b""
+
+        def poll(self):
+            return 0
+
+    def fake_popen(arguments, **kwargs):
+        captured["arguments"] = arguments
+        captured["kwargs"] = kwargs
+        return CompletedProcess()
+
+    monkeypatch.setattr(write_tools_module.subprocess, "Popen", fake_popen)
+
+    result = run_command(tmp_path, ["python", "--version"], timeout_seconds=10)
+
+    assert result.returncode == 0
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+
+
+def test_windows_process_cleanup_kills_tree_and_never_communicates_without_timeout(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class HangingProcess:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            raise AssertionError("Windows cleanup should terminate the process tree first")
+
+        def kill(self):
+            self.returncode = -9
+
+        def communicate(self, timeout=None):
+            assert timeout is not None, "process cleanup must never use unbounded communicate()"
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("git", timeout)
+            return b"partial", b""
+
+        def wait(self, timeout=None):
+            assert timeout is not None
+            return self.returncode
+
+    process = HangingProcess()
+
+    def fake_run(arguments, **kwargs):
+        calls.append((list(arguments), dict(kwargs)))
+        process.returncode = 1
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(write_tools_module.os, "name", "nt")
+    monkeypatch.setattr(write_tools_module.subprocess, "run", fake_run)
+
+    stdout, stderr = _terminate_process(process)
+
+    assert stdout == b"partial"
+    assert stderr == b""
+    assert calls == [
+        (
+            ["taskkill", "/F", "/T", "/PID", "4242"],
+            {
+                "shell": False,
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "timeout": 2.0,
+                "check": False,
+            },
+        )
+    ]
+
+
+def test_process_cleanup_stays_bounded_when_pipes_never_reach_eof(monkeypatch) -> None:
+    communicate_timeouts: list[float | None] = []
+
+    class Pipe:
+        def close(self) -> None:
+            pass
+
+    class HangingProcess:
+        pid = 4242
+        returncode = None
+        stdout = Pipe()
+        stderr = Pipe()
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("git", timeout, output=b"partial", stderr=b"")
+
+        def wait(self, timeout=None):
+            assert timeout is not None
+            return self.returncode
+
+    monkeypatch.setattr(write_tools_module.os, "name", "posix")
+
+    stdout, stderr = _terminate_process(HangingProcess())
+
+    assert stdout == b"partial"
+    assert stderr == b""
+    assert communicate_timeouts == [1.0, 1.0]
 
 
 def test_run_command_reports_resolve_spawn_and_execute_timings(tmp_path) -> None:

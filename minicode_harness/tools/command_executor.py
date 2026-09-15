@@ -18,6 +18,7 @@ from .write_tools import (
     CommandRunResult,
     _decode_command_output,
     _sanitized_command_environment,
+    _terminate_process,
     run_command,
 )
 
@@ -25,6 +26,7 @@ from .write_tools import (
 _CONTAINER_WORKSPACE = "/workspace"
 _CONTAINER_TMPFS = "/tmp:rw,nosuid,nodev,noexec,size=64m"
 _DOCKER_CLEANUP_TIMEOUT_SECONDS = 5
+_DOCKER_PREFLIGHT_TIMEOUT_SECONDS = 5
 _DOCKER_STOP_TIMEOUT_SECONDS = 1
 
 
@@ -64,7 +66,12 @@ def create_command_executor(
         return LocalCommandExecutor()
     if not image:
         raise ValueError("Docker sandbox requires an image.")
-    return DockerCommandExecutor(image=image)
+    executor = DockerCommandExecutor(image=image)
+    _validate_docker_runtime(
+        docker_binary=executor.docker_binary,
+        image=executor.image,
+    )
+    return executor
 
 
 class LocalCommandExecutor:
@@ -156,6 +163,8 @@ class DockerCommandExecutor:
                 self.docker_binary,
                 "run",
                 "--rm",
+                "--pull",
+                "never",
                 "--cidfile",
                 str(cidfile),
                 "--network",
@@ -204,6 +213,7 @@ def _run_docker_process(
         process = subprocess.Popen(
             arguments,
             shell=False,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_sanitized_command_environment(),
@@ -307,13 +317,64 @@ def _docker_result(
 
 
 def _terminate_docker_process(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
-    if process.poll() is None:
-        process.terminate()
+    return _terminate_process(process)
+
+
+def _validate_docker_runtime(*, docker_binary: str, image: str) -> None:
     try:
-        return process.communicate(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return process.communicate()
+        daemon = subprocess.run(
+            [docker_binary, "version", "--format", "{{.Server.Version}}"],
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_sanitized_command_environment(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_DOCKER_PREFLIGHT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Docker sandbox unavailable: Docker CLI was not found. Install Docker "
+            "Desktop or use --sandbox local explicitly."
+        ) from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            "Docker sandbox unavailable: Docker daemon did not respond. Start "
+            "Docker Desktop or use --sandbox local explicitly."
+        ) from exc
+    if daemon.returncode != 0:
+        raise RuntimeError(
+            "Docker sandbox unavailable: Docker daemon is not reachable. Start "
+            "Docker Desktop or use --sandbox local explicitly."
+        )
+
+    try:
+        image_check = subprocess.run(
+            [docker_binary, "image", "inspect", image],
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_sanitized_command_environment(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_DOCKER_PREFLIGHT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"Docker sandbox image check failed for {image!r}. Build or pull the "
+            "image first, or use --sandbox local explicitly."
+        ) from exc
+    if image_check.returncode != 0:
+        raise RuntimeError(
+            f"Docker sandbox image {image!r} is not available locally. Build or "
+            "pull it first, or use --sandbox local explicitly."
+        )
 
 
 def _cleanup_docker_container(*, docker_binary: str, cidfile: Path) -> str:

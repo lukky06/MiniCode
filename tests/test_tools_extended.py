@@ -11,6 +11,7 @@ import pytest
 import minicode_harness.tools.registry as registry_module
 from minicode_harness.policy import RiskLevel
 from minicode_harness.tools import (
+    DockerCommandExecutor,
     StaleWriteError,
     ToolRegistry,
     compact_tool_schema_for_provider,
@@ -520,6 +521,25 @@ def test_request_user_input_validates_bounded_choices(tmp_path: Path) -> None:
             "request_user_input",
             {"question": "Too few", "options": [{"label": "only"}]},
         )
+
+
+def test_docker_command_schema_tells_model_about_linux_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = ToolRegistry(
+        str(workspace),
+        enable_write=True,
+        command_executor=DockerCommandExecutor(image="python:3.11-slim"),
+    )
+
+    run_command = next(
+        schema["function"]
+        for schema in registry.schemas()
+        if schema["function"]["name"] == "run_command"
+    )
+
+    assert "Linux Docker container" in run_command["description"]
+    assert "/workspace" in run_command["description"]
 
 
 def test_registry_can_disable_command_without_disabling_write_tools(tmp_path: Path) -> None:

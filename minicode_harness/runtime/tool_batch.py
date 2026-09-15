@@ -95,7 +95,8 @@ class ToolBatchExecutor:
                     "observation": outcome.observation,
                 },
             )
-            loop._emit_tool_call_finished(step, outcome.observation)
+            if parallel_tool_outcomes is None:
+                loop._emit_tool_call_finished(step, outcome.observation)
             loop.observations.append(outcome.observation)
             loop._append_tool_result_message(tool_call, outcome.observation)
             loop._record_modified_files(outcome.modified_files or [])
@@ -203,6 +204,21 @@ class ToolBatchExecutor:
             for index in admitted_indexes
             if index not in serial_indexes
         ]
+        def execute_one(
+            index: int,
+            *,
+            memory_read_allowed: bool | None = None,
+        ) -> ToolExecutionOutcome:
+            outcome = loop.tool_runtime.execute(
+                step=step,
+                tool_call=tool_calls[index],
+                available_tool_names=available_tool_names,
+                workspace_generation=workspace_generation,
+                memory_read_allowed=memory_read_allowed,
+            )
+            loop._emit_tool_call_finished(step, outcome.observation)
+            return outcome
+
         if parallel_indexes:
             with ThreadPoolExecutor(
                 max_workers=len(parallel_indexes),
@@ -210,11 +226,8 @@ class ToolBatchExecutor:
             ) as pool:
                 futures = {
                     index: pool.submit(
-                        loop.tool_runtime.execute,
-                        step=step,
-                        tool_call=tool_calls[index],
-                        available_tool_names=available_tool_names,
-                        workspace_generation=workspace_generation,
+                        execute_one,
+                        index,
                         memory_read_allowed=memory_read_admission.get(
                             tool_calls[index].id
                         ),
@@ -222,32 +235,16 @@ class ToolBatchExecutor:
                     for index in parallel_indexes
                 }
                 for index in serial_indexes:
-                    outcomes[index] = loop.tool_runtime.execute(
-                        step=step,
-                        tool_call=tool_calls[index],
-                        available_tool_names=available_tool_names,
-                        workspace_generation=workspace_generation,
-                    )
+                    outcomes[index] = execute_one(index)
                 for index, future in futures.items():
                     outcomes[index] = future.result()
         else:
             for index in serial_indexes:
-                outcomes[index] = loop.tool_runtime.execute(
-                    step=step,
-                    tool_call=tool_calls[index],
-                    available_tool_names=available_tool_names,
-                    workspace_generation=workspace_generation,
-                )
+                outcomes[index] = execute_one(index)
         for index, tool_call in enumerate(tool_calls):
             if memory_read_admission.get(tool_call.id) is not False:
                 continue
-            outcomes[index] = loop.tool_runtime.execute(
-                step=step,
-                tool_call=tool_call,
-                available_tool_names=available_tool_names,
-                workspace_generation=workspace_generation,
-                memory_read_allowed=False,
-            )
+            outcomes[index] = execute_one(index, memory_read_allowed=False)
         loop.trace_writer.write_event(
             "tool_batch_finished",
             step=step,
