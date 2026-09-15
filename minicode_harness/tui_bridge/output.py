@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from minicode_harness.output import ContextUsage
+from minicode_harness.terminal.commands import CommandSpec
+from minicode_harness.terminal.types import TerminalSessionSettings
 from minicode_harness.tools.semantics import read_target
 
 from .protocol import (
     AssistantDelta,
+    CommandCatalogEvent,
     ContextEvent,
     ErrorEvent,
     ExitRequested,
@@ -16,6 +19,7 @@ from .protocol import (
     ReasoningDelta,
     RunFinished,
     RunStarted,
+    SessionSettingsEvent,
     SessionStarted,
     ToolFinished,
     ToolStarted,
@@ -32,6 +36,31 @@ class JsonlOutputSink:
 
     def session_started(self, session_id: str) -> None:
         self.writer.emit(SessionStarted(session_id=session_id))
+
+    def command_catalog(self, commands: tuple[CommandSpec, ...]) -> None:
+        self.writer.emit(
+            CommandCatalogEvent(
+                commands=[
+                    {
+                        "name": command.name,
+                        "description": command.description,
+                        "argument_hint": command.argument_hint,
+                        "argument_choices": list(command.argument_choices),
+                        "availability": command.availability,
+                    }
+                    for command in commands
+                ]
+            )
+        )
+
+    def session_settings(self, settings: TerminalSessionSettings) -> None:
+        self.writer.emit(
+            SessionSettingsEvent(
+                permission_mode=settings.permission_mode.value,
+                approval_policy=settings.approval_policy.value,
+                collaboration_mode=settings.collaboration_mode.value,
+            )
+        )
 
     def run_started(self, run_id: str) -> None:
         self.current_run_id = run_id

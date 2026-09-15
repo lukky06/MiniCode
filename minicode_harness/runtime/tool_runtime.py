@@ -362,6 +362,7 @@ class ToolRuntime:
             if read_overlap_detected:
                 observation.metadata["overlap_detected"] = True
             self._annotate_command_lifecycle(result, observation)
+            self._trace_command_execution_timing(step, tool_call, result)
             self._annotate_mutation_diff(
                 result,
                 observation,
@@ -1253,6 +1254,36 @@ class ToolRuntime:
             return
         observation.metadata["diff_preview"] = diff_preview
         observation.metadata["diff_truncated"] = truncated
+
+    def _trace_command_execution_timing(
+        self,
+        step: int,
+        tool_call: NormalizedToolCall,
+        result: Any,
+    ) -> None:
+        if tool_call.name != "run_command" or isinstance(result, dict):
+            return
+        resolve_ms = getattr(result, "resolve_duration_ms", None)
+        spawn_ms = getattr(result, "spawn_duration_ms", None)
+        execute_ms = getattr(result, "execute_duration_ms", None)
+        if not all(isinstance(value, int) and value >= 0 for value in (resolve_ms, spawn_ms, execute_ms)):
+            return
+        duration_seconds = getattr(result, "duration_seconds", None)
+        total_ms = (
+            max(0, round(float(duration_seconds) * 1000))
+            if isinstance(duration_seconds, (int, float))
+            else resolve_ms + spawn_ms + execute_ms
+        )
+        self.trace_writer.write_event(
+            "command_execution_timing",
+            step=step,
+            tool_call_id=tool_call.id,
+            tool=tool_call.name,
+            resolve_ms=resolve_ms,
+            spawn_ms=spawn_ms,
+            execute_ms=execute_ms,
+            total_ms=total_ms,
+        )
 
     def _annotate_command_lifecycle(
         self,

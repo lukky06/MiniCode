@@ -67,6 +67,7 @@ test("T7 product UI exposes project hierarchy, run status, and tool timeline", (
 
   const idleComposer = stripTerminalSequences(app.editor.render(96).join("\n"));
   assert.match(idleComposer, /Ask MiniCode/);
+  assert.match(idleComposer, /\/ commands/);
 
   app.handleServerEvent({ type: "run_started", run_id: "run_1" });
   app.handleServerEvent({
@@ -123,6 +124,31 @@ test("T7 product UI exposes project hierarchy, run status, and tool timeline", (
   assert.match(stripTerminalSequences(app.footer.render(96).join("\n")), /completed/);
 });
 
+test("session settings stay visible in the footer", () => {
+  const terminal = new FakeTerminal(96, 20);
+  const app = new MiniCodeTuiApp({ terminal });
+
+  app.handleServerEvent({
+    type: "session_settings",
+    permission_mode: "workspace-write",
+    approval_policy: "on-request",
+    collaboration_mode: "default",
+  });
+
+  const normal = stripTerminalSequences(app.footer.render(96).join("\n"));
+  assert.match(normal, /workspace-write/);
+  assert.match(normal, /on-request/);
+
+  app.handleServerEvent({
+    type: "session_settings",
+    permission_mode: "workspace-write",
+    approval_policy: "on-request",
+    collaboration_mode: "plan",
+  });
+  const plan = stripTerminalSequences(app.footer.render(96).join("\n"));
+  assert.match(plan, /plan/);
+});
+
 test("long multi-turn transcript keeps composer and footer inside the visible frame", () => {
   const terminal = new FakeTerminal(90, 18);
   const app = new MiniCodeTuiApp({ terminal });
@@ -158,6 +184,41 @@ test("long multi-turn transcript keeps composer and footer inside the visible fr
   const resized = latestFrame(terminal);
   assert.match(resized, /Ask MiniCode/);
   assert.match(resized, /context 15%/);
+  app.stop();
+});
+
+
+test("running command refreshes elapsed status while active", async () => {
+  const terminal = new FakeTerminal(90, 18);
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+  app.handleServerEvent({ type: "run_started", run_id: "run_cmd" });
+  app.handleServerEvent({
+    type: "tool_started",
+    id: "cmd_live",
+    step: 1,
+    tool: "run_command",
+    target: "git status --short",
+  });
+  app.tui.renderNow(true);
+  const writesBeforeTick = terminal.writes.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  assert.ok(terminal.writes.length > writesBeforeTick);
+  assert.match(
+    stripTerminalSequences(app.transcript.render(100).join("\n")),
+    /1\.\d+s elapsed/,
+  );
+  app.handleServerEvent({
+    type: "tool_finished",
+    id: "cmd_live",
+    step: 1,
+    tool: "run_command",
+    status: "ok",
+    command_status: "completed",
+    duration_ms: 1_100,
+  });
   app.stop();
 });
 
@@ -327,8 +388,16 @@ test("approval overlay owns input and returns the exact approval id", () => {
   app.start();
   app.handleServerEvent({ type: "run_started", run_id: "run_1" });
   app.handleServerEvent({
+    type: "tool_started",
+    id: "call_1",
+    step: 1,
+    tool: "run_command",
+    target: "mvn -q test",
+  });
+  app.handleServerEvent({
     type: "approval_required",
     id: "approval_1",
+    tool_call_id: "call_1",
     tool: "run_command",
     summary: "Run focused tests",
     can_approve_session: true,
@@ -352,6 +421,10 @@ test("approval overlay owns input and returns the exact approval id", () => {
   const approvalFrame = latestFrame(terminal);
   assert.match(approvalFrame, /ACTION REQUIRED/);
   assert.match(approvalFrame, /Permission required/);
+  assert.match(
+    stripTerminalSequences(app.transcript.render(100).join("\n")),
+    /waiting for approval/,
+  );
   terminal.sendInput("y");
 
   assert.deepEqual(messages, [
@@ -390,6 +463,34 @@ test("user input overlay returns the exact choice index", () => {
   assert.deepEqual(messages, [
     { type: "user_input_response", id: "input_1", selected_index: 1 },
   ]);
+  assert.equal(app.editor.disableSubmit, false);
+  app.stop();
+});
+
+test("escape cancels pending user input even after a run has finished", () => {
+  const terminal = new FakeTerminal();
+  const messages: unknown[] = [];
+  const app = new MiniCodeTuiApp({
+    terminal,
+    onClientMessage: (message) => messages.push(message),
+  });
+  app.start();
+  app.handleServerEvent({ type: "run_started", run_id: "run_plan" });
+  app.handleServerEvent({
+    type: "run_finished",
+    status: "completed",
+    run_id: "run_plan",
+  });
+  app.handleServerEvent({
+    type: "user_input_required",
+    id: "input_after_run",
+    question: "Choose next mode",
+    options: [{ label: "Default" }, { label: "Plan" }],
+  });
+
+  terminal.sendInput("\x1b");
+
+  assert.deepEqual(messages, [{ type: "cancel" }]);
   assert.equal(app.editor.disableSubmit, false);
   app.stop();
 });
@@ -436,6 +537,7 @@ test("cancel during approval sends cancel and waits for backend resolution", () 
   app.handleServerEvent({
     type: "approval_required",
     id: "approval_1",
+    tool_call_id: "edit_1",
     tool: "edit",
     summary: "Change src/app.ts",
   });
@@ -450,6 +552,73 @@ test("cancel during approval sends cancel and waits for backend resolution", () 
     run_id: "run_1",
   });
   assert.equal(app.editor.disableSubmit, false);
+  app.stop();
+});
+
+test("command catalog powers slash completion and tab completion", async () => {
+  const terminal = new FakeTerminal(90, 24);
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+  app.handleServerEvent({
+    type: "command_catalog",
+    commands: [
+      {
+        name: "permissions",
+        description: "View or change runtime permissions",
+        argument_hint: "[mode <value>]",
+        argument_choices: ["mode read-only", "mode workspace-write"],
+        availability: "idle",
+      },
+      {
+        name: "plan",
+        description: "Set planning mode",
+        argument_hint: "[on|off|status]",
+        argument_choices: ["on", "off", "status"],
+        availability: "idle",
+      },
+    ],
+  });
+
+  terminal.sendInput("/");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(app.editor.isShowingAutocomplete(), true);
+  assert.match(stripTerminalSequences(app.editor.render(90).join("\n")), /permissions/);
+
+  terminal.sendInput("per");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.sendInput("\t");
+  assert.equal(app.editor.getText(), "/permissions ");
+
+  terminal.sendInput("mode w");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(
+    stripTerminalSequences(app.editor.render(90).join("\n")),
+    /mode workspace-write/,
+  );
+  app.stop();
+});
+
+test("idle-only slash completion is hidden while a run is active", async () => {
+  const terminal = new FakeTerminal(90, 24);
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+  app.handleServerEvent({
+    type: "command_catalog",
+    commands: [
+      {
+        name: "permissions",
+        description: "View or change runtime permissions",
+        argument_choices: [],
+        availability: "idle",
+      },
+    ],
+  });
+  app.handleServerEvent({ type: "run_started", run_id: "run_active" });
+
+  terminal.sendInput("/");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(app.editor.isShowingAutocomplete(), false);
   app.stop();
 });
 

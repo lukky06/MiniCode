@@ -7,6 +7,8 @@ import { createInterface } from "node:readline";
 // src/protocol.ts
 var SERVER_TYPES = /* @__PURE__ */ new Set([
   "session_started",
+  "command_catalog",
+  "session_settings",
   "run_started",
   "context",
   "tool_started",
@@ -39,6 +41,50 @@ function validateRequiredFields(value) {
     case "session_started":
       exactKeys(value, ["type", "session_id"]);
       requireString(value, "session_id");
+      return;
+    case "command_catalog":
+      exactKeys(value, ["type", "commands"]);
+      if (!Array.isArray(value.commands)) {
+        throw new Error("Expected command catalog array");
+      }
+      for (const command of value.commands) {
+        if (!isRecord(command)) {
+          throw new Error("Expected command catalog item object");
+        }
+        exactKeys(command, [
+          "name",
+          "description",
+          "argument_hint",
+          "argument_choices",
+          "availability"
+        ]);
+        requireString(command, "name");
+        requireString(command, "description");
+        requireOptionalString(command, "argument_hint");
+        if (!Array.isArray(command.argument_choices) || command.argument_choices.some((item) => typeof item !== "string")) {
+          throw new Error("Expected command argument choice strings");
+        }
+        if (!["idle", "active", "both"].includes(String(command.availability))) {
+          throw new Error("Expected command availability");
+        }
+      }
+      return;
+    case "session_settings":
+      exactKeys(value, [
+        "type",
+        "permission_mode",
+        "approval_policy",
+        "collaboration_mode"
+      ]);
+      if (!["read-only", "workspace-write", "full-access"].includes(String(value.permission_mode))) {
+        throw new Error("Expected permission mode");
+      }
+      if (!["on-request", "never"].includes(String(value.approval_policy))) {
+        throw new Error("Expected approval policy");
+      }
+      if (!["default", "plan"].includes(String(value.collaboration_mode))) {
+        throw new Error("Expected collaboration mode");
+      }
       return;
     case "run_started":
       exactKeys(value, ["type", "run_id"]);
@@ -96,12 +142,14 @@ function validateRequiredFields(value) {
       exactKeys(value, [
         "type",
         "id",
+        "tool_call_id",
         "tool",
         "summary",
         "details",
         "can_approve_session"
       ]);
       requireString(value, "id");
+      requireString(value, "tool_call_id");
       requireString(value, "tool");
       requireOptionalString(value, "summary");
       requireOptionalString(value, "details");
@@ -1551,6 +1599,696 @@ var Wt = g.walkTokens;
 var Xt = g.parseInline;
 var Vt = b.parse;
 var Yt = x.lex;
+
+// node_modules/@earendil-works/pi-tui/dist/autocomplete.js
+import { spawn as spawn2 } from "child_process";
+import { readdirSync, statSync } from "fs";
+import { homedir } from "os";
+import { basename, dirname, join } from "path";
+
+// node_modules/@earendil-works/pi-tui/dist/fuzzy.js
+function fuzzyMatch(query, text) {
+  const queryLower = query.toLowerCase();
+  const textLower = text.toLowerCase();
+  const matchQuery = (normalizedQuery) => {
+    if (normalizedQuery.length === 0) {
+      return { matches: true, score: 0 };
+    }
+    if (normalizedQuery.length > textLower.length) {
+      return { matches: false, score: 0 };
+    }
+    let queryIndex = 0;
+    let score = 0;
+    let lastMatchIndex = -1;
+    let consecutiveMatches = 0;
+    for (let i = 0; i < textLower.length && queryIndex < normalizedQuery.length; i++) {
+      if (textLower[i] === normalizedQuery[queryIndex]) {
+        const isWordBoundary = i === 0 || /[\s\-_./:]/.test(textLower[i - 1]);
+        if (lastMatchIndex === i - 1) {
+          consecutiveMatches++;
+          score -= consecutiveMatches * 5;
+        } else {
+          consecutiveMatches = 0;
+          if (lastMatchIndex >= 0) {
+            score += (i - lastMatchIndex - 1) * 2;
+          }
+        }
+        if (isWordBoundary) {
+          score -= 10;
+        }
+        score += i * 0.1;
+        lastMatchIndex = i;
+        queryIndex++;
+      }
+    }
+    if (queryIndex < normalizedQuery.length) {
+      return { matches: false, score: 0 };
+    }
+    if (normalizedQuery === textLower) {
+      score -= 100;
+    }
+    return { matches: true, score };
+  };
+  const primaryMatch = matchQuery(queryLower);
+  if (primaryMatch.matches) {
+    return primaryMatch;
+  }
+  const alphaNumericMatch = queryLower.match(/^(?<letters>[a-z]+)(?<digits>[0-9]+)$/);
+  const numericAlphaMatch = queryLower.match(/^(?<digits>[0-9]+)(?<letters>[a-z]+)$/);
+  const swappedQuery = alphaNumericMatch ? `${alphaNumericMatch.groups?.digits ?? ""}${alphaNumericMatch.groups?.letters ?? ""}` : numericAlphaMatch ? `${numericAlphaMatch.groups?.letters ?? ""}${numericAlphaMatch.groups?.digits ?? ""}` : "";
+  if (!swappedQuery) {
+    return primaryMatch;
+  }
+  const swappedMatch = matchQuery(swappedQuery);
+  if (!swappedMatch.matches) {
+    return primaryMatch;
+  }
+  return { matches: true, score: swappedMatch.score + 5 };
+}
+function fuzzyFilter(items, query, getText) {
+  if (!query.trim()) {
+    return items;
+  }
+  const tokens = query.trim().split(/[\s/]+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) {
+    return items;
+  }
+  const results = [];
+  for (const item of items) {
+    const text = getText(item);
+    let totalScore = 0;
+    let allMatch = true;
+    for (const token of tokens) {
+      const match = fuzzyMatch(token, text);
+      if (match.matches) {
+        totalScore += match.score;
+      } else {
+        allMatch = false;
+        break;
+      }
+    }
+    if (allMatch) {
+      results.push({ item, totalScore });
+    }
+  }
+  results.sort((a, b2) => a.totalScore - b2.totalScore);
+  return results.map((r) => r.item);
+}
+
+// node_modules/@earendil-works/pi-tui/dist/autocomplete.js
+var PATH_DELIMITERS = /* @__PURE__ */ new Set([" ", "	", '"', "'", "="]);
+function toDisplayPath(value) {
+  return value.replace(/\\/g, "/");
+}
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function buildFdPathQuery(query) {
+  const normalized = toDisplayPath(query);
+  if (!normalized.includes("/")) {
+    return normalized;
+  }
+  const hasTrailingSeparator = normalized.endsWith("/");
+  const trimmed = normalized.replace(/^\/+|\/+$/g, "");
+  if (!trimmed) {
+    return normalized;
+  }
+  const separatorPattern = "[\\\\/]";
+  const segments = trimmed.split("/").filter(Boolean).map((segment) => escapeRegex(segment));
+  if (segments.length === 0) {
+    return normalized;
+  }
+  let pattern = segments.join(separatorPattern);
+  if (hasTrailingSeparator) {
+    pattern += separatorPattern;
+  }
+  return pattern;
+}
+function findLastDelimiter(text) {
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    if (PATH_DELIMITERS.has(text[i] ?? "")) {
+      return i;
+    }
+  }
+  return -1;
+}
+function findUnclosedQuoteStart(text) {
+  let inQuotes = false;
+  let quoteStart = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '"') {
+      inQuotes = !inQuotes;
+      if (inQuotes) {
+        quoteStart = i;
+      }
+    }
+  }
+  return inQuotes ? quoteStart : null;
+}
+function isTokenStart(text, index) {
+  return index === 0 || PATH_DELIMITERS.has(text[index - 1] ?? "");
+}
+function extractQuotedPrefix(text) {
+  const quoteStart = findUnclosedQuoteStart(text);
+  if (quoteStart === null) {
+    return null;
+  }
+  if (quoteStart > 0 && text[quoteStart - 1] === "@") {
+    if (!isTokenStart(text, quoteStart - 1)) {
+      return null;
+    }
+    return text.slice(quoteStart - 1);
+  }
+  if (!isTokenStart(text, quoteStart)) {
+    return null;
+  }
+  return text.slice(quoteStart);
+}
+function parsePathPrefix(prefix) {
+  if (prefix.startsWith('@"')) {
+    return { rawPrefix: prefix.slice(2), isAtPrefix: true, isQuotedPrefix: true };
+  }
+  if (prefix.startsWith('"')) {
+    return { rawPrefix: prefix.slice(1), isAtPrefix: false, isQuotedPrefix: true };
+  }
+  if (prefix.startsWith("@")) {
+    return { rawPrefix: prefix.slice(1), isAtPrefix: true, isQuotedPrefix: false };
+  }
+  return { rawPrefix: prefix, isAtPrefix: false, isQuotedPrefix: false };
+}
+function buildCompletionValue(path3, options) {
+  const needsQuotes = options.isQuotedPrefix || path3.includes(" ");
+  const prefix = options.isAtPrefix ? "@" : "";
+  if (!needsQuotes) {
+    return `${prefix}${path3}`;
+  }
+  const openQuote = `${prefix}"`;
+  const closeQuote = '"';
+  return `${openQuote}${path3}${closeQuote}`;
+}
+async function walkDirectoryWithFd(baseDir, fdPath, query, maxResults, signal, maxDepth) {
+  const args = [
+    "--base-directory",
+    baseDir,
+    "--max-results",
+    String(maxResults),
+    "--type",
+    "f",
+    "--type",
+    "d",
+    "--follow",
+    "--hidden",
+    "--exclude",
+    ".git",
+    "--exclude",
+    ".git/*",
+    "--exclude",
+    ".git/**"
+  ];
+  if (maxDepth !== void 0) {
+    args.push("--max-depth", String(maxDepth));
+  }
+  if (toDisplayPath(query).includes("/")) {
+    args.push("--full-path");
+  }
+  if (query) {
+    args.push(buildFdPathQuery(query));
+  }
+  return await new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve([]);
+      return;
+    }
+    const child = spawn2(fdPath, args, {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let resolved = false;
+    const finish = (results) => {
+      if (resolved)
+        return;
+      resolved = true;
+      signal.removeEventListener("abort", onAbort);
+      resolve(results);
+    };
+    const onAbort = () => {
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    child.stdout.setEncoding("utf-8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.on("error", () => {
+      finish([]);
+    });
+    child.on("close", (code) => {
+      if (signal.aborted || code !== 0 || !stdout) {
+        finish([]);
+        return;
+      }
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      const results = [];
+      for (const line of lines) {
+        const displayLine = toDisplayPath(line);
+        const hasTrailingSeparator = displayLine.endsWith("/");
+        const normalizedPath = hasTrailingSeparator ? displayLine.slice(0, -1) : displayLine;
+        if (normalizedPath === ".git" || normalizedPath.startsWith(".git/") || normalizedPath.includes("/.git/")) {
+          continue;
+        }
+        results.push({
+          path: displayLine,
+          isDirectory: hasTrailingSeparator
+        });
+      }
+      finish(results);
+    });
+  });
+}
+var CombinedAutocompleteProvider = class {
+  commands;
+  basePath;
+  fdPath;
+  constructor(commands = [], basePath, fdPath = null) {
+    this.commands = commands;
+    this.basePath = basePath;
+    this.fdPath = fdPath;
+  }
+  async getSuggestions(lines, cursorLine, cursorCol, options) {
+    const currentLine = lines[cursorLine] || "";
+    const textBeforeCursor = currentLine.slice(0, cursorCol);
+    const atPrefix = this.extractAtPrefix(textBeforeCursor);
+    if (atPrefix) {
+      const { rawPrefix, isQuotedPrefix } = parsePathPrefix(atPrefix);
+      const suggestions2 = await this.getFuzzyFileSuggestions(rawPrefix, {
+        isQuotedPrefix,
+        signal: options.signal
+      });
+      if (suggestions2.length === 0)
+        return null;
+      return {
+        items: suggestions2,
+        prefix: atPrefix
+      };
+    }
+    if (!options.force && textBeforeCursor.startsWith("/")) {
+      const spaceIndex = textBeforeCursor.indexOf(" ");
+      if (spaceIndex === -1) {
+        const prefix = textBeforeCursor.slice(1);
+        const commandItems = this.commands.map((cmd) => {
+          const name = "name" in cmd ? cmd.name : cmd.value;
+          const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : void 0;
+          const desc = cmd.description ?? "";
+          const fullDesc = hint ? desc ? `${hint} \u2014 ${desc}` : hint : desc;
+          return {
+            name,
+            label: name,
+            description: fullDesc || void 0
+          };
+        });
+        const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
+          value: item.name,
+          label: item.label,
+          ...item.description && { description: item.description }
+        }));
+        if (filtered.length === 0)
+          return null;
+        return {
+          items: filtered,
+          prefix: textBeforeCursor
+        };
+      }
+      const commandName = textBeforeCursor.slice(1, spaceIndex);
+      const argumentText = textBeforeCursor.slice(spaceIndex + 1);
+      const command = this.commands.find((cmd) => {
+        const name = "name" in cmd ? cmd.name : cmd.value;
+        return name === commandName;
+      });
+      if (!command || !("getArgumentCompletions" in command) || !command.getArgumentCompletions) {
+        return null;
+      }
+      const argumentSuggestions = await command.getArgumentCompletions(argumentText);
+      if (!Array.isArray(argumentSuggestions) || argumentSuggestions.length === 0) {
+        return null;
+      }
+      return {
+        items: argumentSuggestions,
+        prefix: argumentText
+      };
+    }
+    const pathMatch = this.extractPathPrefix(textBeforeCursor, options.force ?? false);
+    if (pathMatch === null) {
+      return null;
+    }
+    const suggestions = this.getFileSuggestions(pathMatch);
+    if (suggestions.length === 0)
+      return null;
+    return {
+      items: suggestions,
+      prefix: pathMatch
+    };
+  }
+  applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+    const currentLine = lines[cursorLine] || "";
+    const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+    const afterCursor = currentLine.slice(cursorCol);
+    const isQuotedPrefix = prefix.startsWith('"') || prefix.startsWith('@"');
+    const hasLeadingQuoteAfterCursor = afterCursor.startsWith('"');
+    const hasTrailingQuoteInItem = item.value.endsWith('"');
+    const adjustedAfterCursor = isQuotedPrefix && hasTrailingQuoteInItem && hasLeadingQuoteAfterCursor ? afterCursor.slice(1) : afterCursor;
+    const isSlashCommand = prefix.startsWith("/") && beforePrefix.trim() === "" && !prefix.slice(1).includes("/");
+    if (isSlashCommand) {
+      const newLine2 = `${beforePrefix}/${item.value} ${adjustedAfterCursor}`;
+      const newLines2 = [...lines];
+      newLines2[cursorLine] = newLine2;
+      return {
+        lines: newLines2,
+        cursorLine,
+        cursorCol: beforePrefix.length + item.value.length + 2
+        // +2 for "/" and space
+      };
+    }
+    if (prefix.startsWith("@")) {
+      const isDirectory2 = item.label.endsWith("/");
+      const suffix = isDirectory2 ? "" : " ";
+      const newLine2 = `${beforePrefix + item.value}${suffix}${adjustedAfterCursor}`;
+      const newLines2 = [...lines];
+      newLines2[cursorLine] = newLine2;
+      const hasTrailingQuote2 = item.value.endsWith('"');
+      const cursorOffset2 = isDirectory2 && hasTrailingQuote2 ? item.value.length - 1 : item.value.length;
+      return {
+        lines: newLines2,
+        cursorLine,
+        cursorCol: beforePrefix.length + cursorOffset2 + suffix.length
+      };
+    }
+    const textBeforeCursor = currentLine.slice(0, cursorCol);
+    if (textBeforeCursor.includes("/") && textBeforeCursor.includes(" ")) {
+      const newLine2 = beforePrefix + item.value + adjustedAfterCursor;
+      const newLines2 = [...lines];
+      newLines2[cursorLine] = newLine2;
+      const isDirectory2 = item.label.endsWith("/");
+      const hasTrailingQuote2 = item.value.endsWith('"');
+      const cursorOffset2 = isDirectory2 && hasTrailingQuote2 ? item.value.length - 1 : item.value.length;
+      return {
+        lines: newLines2,
+        cursorLine,
+        cursorCol: beforePrefix.length + cursorOffset2
+      };
+    }
+    const newLine = beforePrefix + item.value + adjustedAfterCursor;
+    const newLines = [...lines];
+    newLines[cursorLine] = newLine;
+    const isDirectory = item.label.endsWith("/");
+    const hasTrailingQuote = item.value.endsWith('"');
+    const cursorOffset = isDirectory && hasTrailingQuote ? item.value.length - 1 : item.value.length;
+    return {
+      lines: newLines,
+      cursorLine,
+      cursorCol: beforePrefix.length + cursorOffset
+    };
+  }
+  // Extract @ prefix for fuzzy file suggestions
+  extractAtPrefix(text) {
+    const quotedPrefix = extractQuotedPrefix(text);
+    if (quotedPrefix?.startsWith('@"')) {
+      return quotedPrefix;
+    }
+    const lastDelimiterIndex = findLastDelimiter(text);
+    const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
+    if (text[tokenStart] === "@") {
+      return text.slice(tokenStart);
+    }
+    return null;
+  }
+  // Extract a path-like prefix from the text before cursor
+  extractPathPrefix(text, forceExtract = false) {
+    const quotedPrefix = extractQuotedPrefix(text);
+    if (quotedPrefix) {
+      return quotedPrefix;
+    }
+    const lastDelimiterIndex = findLastDelimiter(text);
+    const pathPrefix = lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1);
+    if (forceExtract) {
+      return pathPrefix;
+    }
+    if (pathPrefix.includes("/") || pathPrefix.startsWith(".") || pathPrefix.startsWith("~/")) {
+      return pathPrefix;
+    }
+    if (pathPrefix === "" && text.endsWith(" ")) {
+      return pathPrefix;
+    }
+    return null;
+  }
+  // Expand home directory (~/) to actual home path
+  expandHomePath(path3) {
+    if (path3.startsWith("~/")) {
+      const expandedPath = join(homedir(), path3.slice(2));
+      return path3.endsWith("/") && !expandedPath.endsWith("/") ? `${expandedPath}/` : expandedPath;
+    } else if (path3 === "~") {
+      return homedir();
+    }
+    return path3;
+  }
+  resolveScopedFuzzyQuery(rawQuery) {
+    const normalizedQuery = toDisplayPath(rawQuery);
+    const slashIndex = normalizedQuery.lastIndexOf("/");
+    if (slashIndex === -1) {
+      return null;
+    }
+    const displayBase = normalizedQuery.slice(0, slashIndex + 1);
+    const query = normalizedQuery.slice(slashIndex + 1);
+    let baseDir;
+    if (displayBase.startsWith("~/")) {
+      baseDir = this.expandHomePath(displayBase);
+    } else if (displayBase.startsWith("/")) {
+      baseDir = displayBase;
+    } else {
+      baseDir = join(this.basePath, displayBase);
+    }
+    try {
+      if (!statSync(baseDir).isDirectory()) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+    return { baseDir, query, displayBase };
+  }
+  scopedPathForDisplay(displayBase, relativePath) {
+    const normalizedRelativePath = toDisplayPath(relativePath);
+    if (displayBase === "/") {
+      return `/${normalizedRelativePath}`;
+    }
+    return `${toDisplayPath(displayBase)}${normalizedRelativePath}`;
+  }
+  // Get file/directory suggestions for a given path prefix
+  getFileSuggestions(prefix) {
+    try {
+      let searchDir;
+      let searchPrefix;
+      const { rawPrefix, isAtPrefix, isQuotedPrefix } = parsePathPrefix(prefix);
+      let expandedPrefix = rawPrefix;
+      if (expandedPrefix.startsWith("~")) {
+        expandedPrefix = this.expandHomePath(expandedPrefix);
+      }
+      const isRootPrefix = rawPrefix === "" || rawPrefix === "./" || rawPrefix === "../" || rawPrefix === "~" || rawPrefix === "~/" || rawPrefix === "/" || isAtPrefix && rawPrefix === "";
+      if (isRootPrefix) {
+        if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
+          searchDir = expandedPrefix;
+        } else {
+          searchDir = join(this.basePath, expandedPrefix);
+        }
+        searchPrefix = "";
+      } else if (rawPrefix.endsWith("/")) {
+        if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
+          searchDir = expandedPrefix;
+        } else {
+          searchDir = join(this.basePath, expandedPrefix);
+        }
+        searchPrefix = "";
+      } else {
+        const dir = dirname(expandedPrefix);
+        const file = basename(expandedPrefix);
+        if (rawPrefix.startsWith("~") || expandedPrefix.startsWith("/")) {
+          searchDir = dir;
+        } else {
+          searchDir = join(this.basePath, dir);
+        }
+        searchPrefix = file;
+      }
+      const entries = readdirSync(searchDir, { withFileTypes: true });
+      const suggestions = [];
+      for (const entry of entries) {
+        if (!entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase())) {
+          continue;
+        }
+        let isDirectory = entry.isDirectory();
+        if (!isDirectory && entry.isSymbolicLink()) {
+          try {
+            const fullPath = join(searchDir, entry.name);
+            isDirectory = statSync(fullPath).isDirectory();
+          } catch {
+          }
+        }
+        let relativePath;
+        const name = entry.name;
+        const displayPrefix = rawPrefix;
+        if (displayPrefix.endsWith("/")) {
+          relativePath = displayPrefix + name;
+        } else if (displayPrefix.includes("/") || displayPrefix.includes("\\")) {
+          if (displayPrefix.startsWith("~/")) {
+            const homeRelativeDir = displayPrefix.slice(2);
+            const dir = dirname(homeRelativeDir);
+            relativePath = `~/${dir === "." ? name : join(dir, name)}`;
+          } else if (displayPrefix.startsWith("/")) {
+            const dir = dirname(displayPrefix);
+            if (dir === "/") {
+              relativePath = `/${name}`;
+            } else {
+              relativePath = `${dir}/${name}`;
+            }
+          } else {
+            relativePath = join(dirname(displayPrefix), name);
+            if (displayPrefix.startsWith("./") && !relativePath.startsWith("./")) {
+              relativePath = `./${relativePath}`;
+            }
+          }
+        } else {
+          if (displayPrefix.startsWith("~")) {
+            relativePath = `~/${name}`;
+          } else {
+            relativePath = name;
+          }
+        }
+        relativePath = toDisplayPath(relativePath);
+        const pathValue = isDirectory ? `${relativePath}/` : relativePath;
+        const value = buildCompletionValue(pathValue, {
+          isDirectory,
+          isAtPrefix,
+          isQuotedPrefix
+        });
+        suggestions.push({
+          value,
+          label: name + (isDirectory ? "/" : "")
+        });
+      }
+      suggestions.sort((a, b2) => {
+        const aIsDir = a.value.endsWith("/");
+        const bIsDir = b2.value.endsWith("/");
+        if (aIsDir && !bIsDir)
+          return -1;
+        if (!aIsDir && bIsDir)
+          return 1;
+        return a.label.localeCompare(b2.label);
+      });
+      return suggestions;
+    } catch (_e2) {
+      return [];
+    }
+  }
+  // Score an entry against the query (higher = better match)
+  // isDirectory adds bonus to prioritize folders
+  scoreEntry(filePath, query, isDirectory) {
+    const fileName = basename(filePath);
+    const lowerFileName = fileName.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    let score = 0;
+    if (lowerFileName === lowerQuery)
+      score = 100;
+    else if (lowerFileName.startsWith(lowerQuery))
+      score = 80;
+    else if (lowerFileName.includes(lowerQuery))
+      score = 50;
+    else if (filePath.toLowerCase().includes(lowerQuery))
+      score = 30;
+    if (isDirectory && score > 0)
+      score += 10;
+    return score;
+  }
+  async getBaseDirSuggestions(baseDir, query, signal) {
+    if (!this.fdPath || signal.aborted) {
+      return [];
+    }
+    return await walkDirectoryWithFd(baseDir, this.fdPath, query, 100, signal, 1);
+  }
+  // Fuzzy file search using fd (fast, respects .gitignore)
+  async getFuzzyFileSuggestions(query, options) {
+    if (!this.fdPath || options.signal.aborted) {
+      return [];
+    }
+    try {
+      const scopedQuery = this.resolveScopedFuzzyQuery(query);
+      const fdBaseDir = scopedQuery?.baseDir ?? this.basePath;
+      const fdQuery = scopedQuery?.query ?? query;
+      const baseDirEntries = await this.getBaseDirSuggestions(fdBaseDir, fdQuery, options.signal);
+      const recursiveEntries = await walkDirectoryWithFd(fdBaseDir, this.fdPath, fdQuery, 100, options.signal);
+      const seenPaths = new Set(baseDirEntries.map((entry) => entry.path));
+      const entries = [
+        ...baseDirEntries,
+        ...recursiveEntries.filter((entry) => {
+          if (seenPaths.has(entry.path))
+            return false;
+          seenPaths.add(entry.path);
+          return true;
+        })
+      ];
+      if (options.signal.aborted) {
+        return [];
+      }
+      const scoredEntries = entries.map((entry) => ({
+        ...entry,
+        score: fdQuery ? this.scoreEntry(entry.path, fdQuery, entry.isDirectory) : 1
+      })).filter((entry) => entry.score > 0);
+      scoredEntries.sort((a, b2) => {
+        const scoreDiff = b2.score - a.score;
+        if (scoreDiff !== 0)
+          return scoreDiff;
+        const aDepth = toDisplayPath(a.path).split("/").filter(Boolean).length;
+        const bDepth = toDisplayPath(b2.path).split("/").filter(Boolean).length;
+        const depthDiff = aDepth - bDepth;
+        if (depthDiff !== 0)
+          return depthDiff;
+        const lengthDiff = a.path.length - b2.path.length;
+        if (lengthDiff !== 0)
+          return lengthDiff;
+        return a.path.localeCompare(b2.path);
+      });
+      const topEntries = scoredEntries.slice(0, 20);
+      const suggestions = [];
+      for (const { path: entryPath, isDirectory } of topEntries) {
+        const pathWithoutSlash = isDirectory ? entryPath.slice(0, -1) : entryPath;
+        const displayPath = scopedQuery ? this.scopedPathForDisplay(scopedQuery.displayBase, pathWithoutSlash) : pathWithoutSlash;
+        const entryName = basename(pathWithoutSlash);
+        const completionPath = isDirectory ? `${displayPath}/` : displayPath;
+        const value = buildCompletionValue(completionPath, {
+          isDirectory,
+          isAtPrefix: true,
+          isQuotedPrefix: options.isQuotedPrefix
+        });
+        suggestions.push({
+          value,
+          label: entryName + (isDirectory ? "/" : ""),
+          description: displayPath
+        });
+      }
+      return suggestions;
+    } catch {
+      return [];
+    }
+  }
+  // Check if we should trigger file completion (called on Tab key)
+  shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+    const currentLine = lines[cursorLine] || "";
+    const textBeforeCursor = currentLine.slice(0, cursorCol);
+    if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
+      return false;
+    }
+    return true;
+  }
+};
 
 // node_modules/@earendil-works/pi-tui/dist/tui.js
 import { performance } from "node:perf_hooks";
@@ -9826,19 +10564,19 @@ import * as path from "node:path";
 
 // node_modules/@earendil-works/pi-tui/dist/native-module-path.js
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname as dirname2, join as join2 } from "node:path";
 import { fileURLToPath } from "node:url";
 var moduleRequire = createRequire(import.meta.url);
 var TUI_PACKAGE_NAME = "@earendil-works/pi-tui";
 function getNativeModuleCandidates(nativePath, options = {}) {
-  const moduleDir = dirname(fileURLToPath(options.moduleUrl ?? import.meta.url));
+  const moduleDir = dirname2(fileURLToPath(options.moduleUrl ?? import.meta.url));
   const candidates = [];
   try {
     const packageEntry = (options.resolvePackage ?? moduleRequire.resolve)(TUI_PACKAGE_NAME);
-    candidates.push(join(dirname(packageEntry), "..", nativePath));
+    candidates.push(join2(dirname2(packageEntry), "..", nativePath));
   } catch {
   }
-  candidates.push(join(moduleDir, "..", nativePath), join(moduleDir, nativePath), join(dirname(options.execPath ?? process.execPath), nativePath));
+  candidates.push(join2(moduleDir, "..", nativePath), join2(moduleDir, nativePath), join2(dirname2(options.execPath ?? process.execPath), nativePath));
   return Array.from(new Set(candidates));
 }
 
@@ -12365,7 +13103,7 @@ var Composer = class extends Editor {
       return super.renderBottomBorder(width, hiddenLineCount);
     }
     if (width <= 0) return "";
-    const hint = this.mode === "approval" ? " choose in the approval panel " : this.mode === "steer" ? " Enter steer \xB7 Esc cancel " : " Enter send \xB7 Alt+Enter newline ";
+    const hint = this.mode === "approval" ? " choose in the approval panel " : this.mode === "steer" ? " Enter steer \xB7 Esc cancel " : " Enter send \xB7 / commands \xB7 Alt+Enter newline ";
     if (visibleWidth(hint) >= width - 2) {
       return this.borderColor("\u2500".repeat(width));
     }
@@ -12386,6 +13124,9 @@ var Footer = class {
   hint = "Ctrl+C exit";
   contextUsed = null;
   promptBudget = null;
+  permissionMode = "read-only";
+  approvalPolicy = "on-request";
+  collaborationMode = "default";
   setText(text) {
     this.setStatus(text);
   }
@@ -12398,6 +13139,11 @@ var Footer = class {
     this.contextUsed = Math.max(0, used);
     this.promptBudget = Math.max(1, promptBudget);
   }
+  setSessionSettings(permissionMode, approvalPolicy, collaborationMode) {
+    this.permissionMode = permissionMode;
+    this.approvalPolicy = approvalPolicy;
+    this.collaborationMode = collaborationMode;
+  }
   invalidate() {
   }
   render(width) {
@@ -12407,7 +13153,10 @@ var Footer = class {
     if (width < 28) {
       return [truncateToWidth(status, width)];
     }
-    const left = this.hint ? `${status}  ${ui.dim(this.hint)}` : status;
+    const mode = this.modeLabel();
+    const leftParts = [status, mode];
+    if (this.hint) leftParts.push(ui.dim(this.hint));
+    const left = leftParts.join("  ");
     if (!context || width < 52) {
       return [truncateToWidth(left, width)];
     }
@@ -12422,6 +13171,10 @@ var Footer = class {
         width
       )
     ];
+  }
+  modeLabel() {
+    const prefix = this.collaborationMode === "plan" ? "plan \xB7 " : "";
+    return ui.dim(`${prefix}${this.permissionMode} \xB7 ${this.approvalPolicy}`);
   }
   contextLabel() {
     if (this.contextUsed === null || this.promptBudget === null) return "";
@@ -12669,7 +13422,7 @@ var SUCCESSFUL_TOOL_STATUSES = /* @__PURE__ */ new Set([
 var Activity = class {
   status = "working";
   entries = [];
-  start(id, action, target) {
+  start(id, action, target, trackElapsed = false) {
     this.status = "working";
     const existing = this.entries.find((entry) => entry.id === id);
     if (existing) {
@@ -12679,6 +13432,8 @@ var Activity = class {
       existing.detail = null;
       existing.diffPreview = null;
       existing.diffTruncated = false;
+      existing.trackElapsed = trackElapsed;
+      existing.startedAtMs = trackElapsed ? Date.now() : null;
       return;
     }
     this.entries.push({
@@ -12688,13 +13443,29 @@ var Activity = class {
       detail: null,
       diffPreview: null,
       diffTruncated: false,
-      status: "running"
+      status: "running",
+      trackElapsed,
+      startedAtMs: trackElapsed ? Date.now() : null
     });
+  }
+  pause(id, detail) {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.status !== "running") return;
+    entry.startedAtMs = null;
+    entry.detail = detail;
+  }
+  resume(id) {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.status !== "running") return;
+    entry.detail = null;
+    entry.startedAtMs = entry.trackElapsed ? Date.now() : null;
   }
   finish(id, status, summary, details = {}) {
     const entry = this.entries.find((candidate) => candidate.id === id);
     if (!entry) return;
     const successful = SUCCESSFUL_TOOL_STATUSES.has(status);
+    entry.startedAtMs = null;
+    entry.detail = null;
     entry.status = status === "command_timed_out" ? "warning" : status === "command_cancelled" ? "cancelled" : successful ? "ok" : "error";
     const commandDetail = formatCommandDetail(details);
     if (commandDetail) {
@@ -12710,7 +13481,10 @@ var Activity = class {
   complete() {
     this.status = "worked";
     for (const entry of this.entries) {
-      if (entry.status === "running") entry.status = "ok";
+      if (entry.status !== "running") continue;
+      entry.status = "ok";
+      entry.startedAtMs = null;
+      entry.detail = null;
     }
   }
   invalidate() {
@@ -12733,7 +13507,9 @@ var Activity = class {
       const icon = entry.status === "running" ? ui.accent(">") : entry.status === "ok" ? ui.success("+") : entry.status === "warning" ? ui.warning("!") : entry.status === "cancelled" ? ui.muted("-") : ui.error("x");
       const action = ui.accent(entry.action);
       const target = entry.target ? `  ${ui.text(entry.target)}` : "";
-      const detail = entry.detail ? `  ${ui.dim(`\xB7 ${entry.detail}`)}` : "";
+      const runningDetail = entry.status === "running" && entry.startedAtMs !== null ? `${formatDuration(Math.max(0, Date.now() - entry.startedAtMs))} elapsed` : null;
+      const renderedDetail = entry.detail ?? runningDetail;
+      const detail = renderedDetail ? `  ${ui.dim(`\xB7 ${renderedDetail}`)}` : "";
       const prefix = `  ${ui.dim(branch)} ${icon} `;
       const available = Math.max(0, width - visibleWidth(prefix));
       lines.push(
@@ -12902,13 +13678,19 @@ var Transcript = class {
     }
     return this.reasoningExpanded;
   }
-  startTool(id, action, target) {
+  startTool(id, action, target, trackElapsed = false) {
     this.completeReasoning();
     if (this.activity === null) {
       this.activity = new Activity();
       this.stack.addChild(this.activity);
     }
-    this.activity.start(id, action, target);
+    this.activity.start(id, action, target, trackElapsed);
+  }
+  pauseTool(id, detail) {
+    this.activity?.pause(id, detail);
+  }
+  resumeTool(id) {
+    this.activity?.resume(id);
   }
   finishTool(id, status, summary, details = {}) {
     this.activity?.finish(id, status, summary, details);
@@ -12954,14 +13736,19 @@ var MiniCodeTuiApp = class {
   panelHandle = null;
   pendingApprovalId = null;
   pendingUserInputId = null;
+  runningCommandIds = /* @__PURE__ */ new Set();
+  commandTicker = null;
   onSubmit;
   onClientMessage;
   onExit;
+  workspace;
+  commandCatalog = [];
   constructor(options = {}) {
     const terminal = options.terminal ?? new ProcessTerminal();
     this.onSubmit = options.onSubmit;
     this.onClientMessage = options.onClientMessage;
     this.onExit = options.onExit;
+    this.workspace = options.workspace ?? process.cwd();
     this.header = new Header({
       workspace: options.workspace,
       provider: options.provider,
@@ -12973,6 +13760,13 @@ var MiniCodeTuiApp = class {
     this.tui.addInputListener((data) => {
       if (this.panelHandle !== null && matchesKey(data, Key.escape)) {
         this.clearPanel();
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (this.pendingUserInputId !== null && (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")))) {
+        this.onClientMessage?.({ type: "cancel" });
+        this.clearUserInput();
+        this.footer.setStatus("Ready", "muted", "input cancelled");
         this.tui.requestRender();
         return { consume: true };
       }
@@ -13041,6 +13835,7 @@ var MiniCodeTuiApp = class {
       this.running = true;
       this.transcript.startRun();
       this.editor.setMode("steer");
+      this.configureCommandAutocomplete();
       this.footer.setStatus("Working", "working");
     }
     this.editor.addToHistory(task);
@@ -13053,6 +13848,7 @@ var MiniCodeTuiApp = class {
     this.tui.start();
   }
   stop() {
+    this.clearCommandTicker();
     this.tui.stop();
   }
   handleServerEvent(event) {
@@ -13060,24 +13856,41 @@ var MiniCodeTuiApp = class {
       case "session_started":
         this.header.setSession(event.session_id);
         break;
+      case "command_catalog":
+        this.commandCatalog = event.commands;
+        this.configureCommandAutocomplete();
+        break;
+      case "session_settings":
+        this.footer.setSessionSettings(
+          event.permission_mode,
+          event.approval_policy,
+          event.collaboration_mode
+        );
+        break;
       case "run_started":
         this.running = true;
         this.transcript.startRun();
         this.editor.setMode("steer");
+        this.configureCommandAutocomplete();
         this.footer.setStatus("Working", "working");
         break;
       case "context":
         this.footer.setContext(event.used, event.prompt_budget);
         break;
-      case "tool_started":
+      case "tool_started": {
+        const trackElapsed = event.tool === "run_command";
         this.transcript.startTool(
           event.id,
           toolAction(event.tool),
-          event.target
+          event.target,
+          trackElapsed
         );
+        if (trackElapsed) this.startCommandTicker(event.id);
         this.footer.setStatus("Working", "working");
         break;
+      }
       case "tool_finished":
+        if (event.tool === "run_command") this.finishCommandTicker(event.id);
         this.transcript.finishTool(event.id, event.status, event.summary, {
           commandStatus: event.command_status,
           returncode: event.returncode,
@@ -13097,11 +13910,8 @@ var MiniCodeTuiApp = class {
         this.footer.setStatus("Answering", "working");
         break;
       case "approval_required":
-        this.transcript.startTool(
-          event.id,
-          "Approval required",
-          event.summary ?? event.tool
-        );
+        this.transcript.pauseTool(event.tool_call_id, "waiting for approval");
+        if (event.tool === "run_command") this.pauseCommandTicker(event.tool_call_id);
         this.showApproval(event);
         this.editor.setMode("approval");
         this.footer.setStatus("Permission required", "warning");
@@ -13113,11 +13923,14 @@ var MiniCodeTuiApp = class {
         break;
       case "run_finished":
         this.running = false;
+        this.clearCommandTicker();
+        this.runningCommandIds.clear();
         this.clearApproval();
         this.clearUserInput();
         this.transcript.completeReasoning();
         this.transcript.completeActivity();
         this.editor.setMode("ask");
+        this.configureCommandAutocomplete();
         this.footer.setStatus(
           event.status,
           event.status === "completed" ? "success" : "muted",
@@ -13127,6 +13940,8 @@ var MiniCodeTuiApp = class {
       case "error":
         if (event.fatal) {
           this.running = false;
+          this.clearCommandTicker();
+          this.runningCommandIds.clear();
           this.clearApproval();
           this.clearUserInput();
           this.clearPanel();
@@ -13143,12 +13958,60 @@ var MiniCodeTuiApp = class {
     }
     this.tui.requestRender();
   }
+  configureCommandAutocomplete() {
+    const commands = this.commandCatalog.filter(
+      (command) => this.running ? command.availability !== "idle" : command.availability !== "active"
+    ).map((command) => ({
+      name: command.name,
+      description: command.description,
+      argumentHint: command.argument_hint ?? void 0,
+      getArgumentCompletions: command.argument_choices.length > 0 ? (argumentPrefix) => {
+        const prefix = argumentPrefix.trimStart().toLowerCase();
+        return command.argument_choices.filter((choice) => choice.toLowerCase().startsWith(prefix)).map((choice) => ({
+          value: choice,
+          label: choice
+        }));
+      } : void 0
+    }));
+    this.editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider(commands, this.workspace)
+    );
+  }
+  startCommandTicker(toolCallId) {
+    this.runningCommandIds.add(toolCallId);
+    if (this.commandTicker !== null) return;
+    this.commandTicker = setInterval(() => {
+      if (this.runningCommandIds.size === 0) {
+        this.clearCommandTicker();
+        return;
+      }
+      this.tui.requestRender();
+    }, 1e3);
+    this.commandTicker.unref?.();
+  }
+  pauseCommandTicker(toolCallId) {
+    this.runningCommandIds.delete(toolCallId);
+    if (this.runningCommandIds.size === 0) this.clearCommandTicker();
+  }
+  finishCommandTicker(toolCallId) {
+    this.pauseCommandTicker(toolCallId);
+  }
+  clearCommandTicker() {
+    if (this.commandTicker !== null) {
+      clearInterval(this.commandTicker);
+      this.commandTicker = null;
+    }
+  }
   showApproval(event) {
     this.clearApproval();
     this.pendingApprovalId = event.id;
     this.editor.disableSubmit = true;
     const overlay = new ApprovalOverlay(event, (decision) => {
       if (this.pendingApprovalId !== event.id) return;
+      if (event.tool === "run_command" && (decision === "approve" || decision === "approve_session")) {
+        this.transcript.resumeTool(event.tool_call_id);
+        this.startCommandTicker(event.tool_call_id);
+      }
       this.onClientMessage?.({
         type: "approval_response",
         id: event.id,

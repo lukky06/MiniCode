@@ -1,5 +1,20 @@
+export type CommandCatalogItem = {
+  name: string;
+  description: string;
+  argument_hint?: string | null;
+  argument_choices: string[];
+  availability: "idle" | "active" | "both";
+};
+
 export type ServerMessage =
   | { type: "session_started"; session_id: string }
+  | { type: "command_catalog"; commands: CommandCatalogItem[] }
+  | {
+      type: "session_settings";
+      permission_mode: "read-only" | "workspace-write" | "full-access";
+      approval_policy: "on-request" | "never";
+      collaboration_mode: "default" | "plan";
+    }
   | { type: "run_started"; run_id: string }
   | {
       type: "context";
@@ -34,6 +49,7 @@ export type ServerMessage =
   | {
       type: "approval_required";
       id: string;
+      tool_call_id: string;
       tool: string;
       summary?: string | null;
       details?: string | null;
@@ -78,6 +94,8 @@ export type ClientMessage =
 
 const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "session_started",
+  "command_catalog",
+  "session_settings",
   "run_started",
   "context",
   "tool_started",
@@ -113,6 +131,53 @@ function validateRequiredFields(value: Record<string, unknown>): void {
     case "session_started":
       exactKeys(value, ["type", "session_id"]);
       requireString(value, "session_id");
+      return;
+    case "command_catalog":
+      exactKeys(value, ["type", "commands"]);
+      if (!Array.isArray(value.commands)) {
+        throw new Error("Expected command catalog array");
+      }
+      for (const command of value.commands) {
+        if (!isRecord(command)) {
+          throw new Error("Expected command catalog item object");
+        }
+        exactKeys(command, [
+          "name",
+          "description",
+          "argument_hint",
+          "argument_choices",
+          "availability",
+        ]);
+        requireString(command, "name");
+        requireString(command, "description");
+        requireOptionalString(command, "argument_hint");
+        if (
+          !Array.isArray(command.argument_choices) ||
+          command.argument_choices.some((item) => typeof item !== "string")
+        ) {
+          throw new Error("Expected command argument choice strings");
+        }
+        if (!["idle", "active", "both"].includes(String(command.availability))) {
+          throw new Error("Expected command availability");
+        }
+      }
+      return;
+    case "session_settings":
+      exactKeys(value, [
+        "type",
+        "permission_mode",
+        "approval_policy",
+        "collaboration_mode",
+      ]);
+      if (!["read-only", "workspace-write", "full-access"].includes(String(value.permission_mode))) {
+        throw new Error("Expected permission mode");
+      }
+      if (!["on-request", "never"].includes(String(value.approval_policy))) {
+        throw new Error("Expected approval policy");
+      }
+      if (!["default", "plan"].includes(String(value.collaboration_mode))) {
+        throw new Error("Expected collaboration mode");
+      }
       return;
     case "run_started":
       exactKeys(value, ["type", "run_id"]);
@@ -173,12 +238,14 @@ function validateRequiredFields(value: Record<string, unknown>): void {
       exactKeys(value, [
         "type",
         "id",
+        "tool_call_id",
         "tool",
         "summary",
         "details",
         "can_approve_session",
       ]);
       requireString(value, "id");
+      requireString(value, "tool_call_id");
       requireString(value, "tool");
       requireOptionalString(value, "summary");
       requireOptionalString(value, "details");

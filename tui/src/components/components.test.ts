@@ -109,6 +109,53 @@ test("activity mutates from working to worked without creating a second componen
   );
 });
 
+test("activity renders running command elapsed time and pauses for approval", () => {
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    const activity = new Activity();
+    activity.start("cmd_live", "Run", "git branch --show-current", true);
+    now = 4_500;
+    let rendered = stripTerminalSequences(activity.render(100).join("\n"));
+    assert.match(rendered, /3\.5s elapsed/);
+
+    activity.pause("cmd_live", "waiting for approval");
+    now = 9_500;
+    rendered = stripTerminalSequences(activity.render(100).join("\n"));
+    assert.match(rendered, /waiting for approval/);
+    assert.doesNotMatch(rendered, /8\.5s elapsed/);
+
+    activity.resume("cmd_live");
+    now = 12_000;
+    rendered = stripTerminalSequences(activity.render(100).join("\n"));
+    assert.match(rendered, /2\.5s elapsed/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("activity clears approval wait detail after tool finishes", () => {
+  const activity = new Activity();
+  activity.start("edit_wait", "Change", "src/app.ts");
+  activity.pause("edit_wait", "waiting for approval");
+  activity.finish("edit_wait", "ok");
+
+  const rendered = stripTerminalSequences(activity.render(100).join("\n"));
+  assert.doesNotMatch(rendered, /waiting for approval/);
+  assert.match(rendered, /src\/app\.ts/);
+});
+
+test("activity completion clears pending approval detail", () => {
+  const activity = new Activity();
+  activity.start("edit_cancelled", "Change", "src/app.ts");
+  activity.pause("edit_cancelled", "waiting for approval");
+  activity.complete();
+
+  const rendered = stripTerminalSequences(activity.render(100).join("\n"));
+  assert.doesNotMatch(rendered, /waiting for approval/);
+});
+
 test("activity renders command lifecycle without replacing command identity", () => {
   const activity = new Activity();
 

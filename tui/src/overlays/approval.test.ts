@@ -11,6 +11,7 @@ test("approval overlay stays within narrow widths and toggles Python-provided de
     {
       type: "approval_required",
       id: "approval_1",
+      tool_call_id: "call_1",
       tool: "run_command",
       summary: "运行一个非常长的聚焦测试命令 😀",
       can_approve_session: true,

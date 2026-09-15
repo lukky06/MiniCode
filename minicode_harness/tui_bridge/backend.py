@@ -25,7 +25,11 @@ from minicode_harness.state import (
     UserInputClient,
     UserInputRequest,
 )
-from minicode_harness.terminal.commands import SlashCommandRouter, parse_slash_command
+from minicode_harness.terminal.commands import (
+    SlashCommandRouter,
+    command_catalog,
+    parse_slash_command,
+)
 from minicode_harness.terminal.types import TerminalContext, TerminalSessionSettings
 from minicode_harness.tools import SandboxMode
 
@@ -84,6 +88,9 @@ class JsonlBackend:
         """Consume protocol records until EOF, then cooperatively stop any active Run."""
 
         self.output_sink.session_started(self.session_id)
+        self.output_sink.command_catalog(command_catalog())
+        if self.command_context is not None:
+            self.output_sink.session_settings(self.command_context.session_settings)
         for raw_line in input_stream:
             line = raw_line.rstrip("\r\n")
             try:
@@ -235,6 +242,7 @@ class JsonlBackend:
                     self.executor.execute(execution_request, **kwargs)
                 elif response.selected_index == 2:
                     session_settings.collaboration_mode = CollaborationMode.DEFAULT
+                self.output_sink.session_settings(session_settings)
         except Exception as exc:
             self.output_sink.error(f"{type(exc).__name__}: {exc}")
             self.output_sink.run_finished(
@@ -312,8 +320,15 @@ class JsonlBackend:
         steering: SteeringQueue,
     ) -> None:
         bind_cancellation = getattr(self.approval_client, "bind_cancellation", None)
+        bind_user_input_cancellation = getattr(
+            self.user_input_client,
+            "bind_cancellation",
+            None,
+        )
         if callable(bind_cancellation):
             bind_cancellation(cancellation)
+        if callable(bind_user_input_cancellation):
+            bind_user_input_cancellation(cancellation)
         try:
             context = replace(
                 self.command_context,
@@ -334,16 +349,21 @@ class JsonlBackend:
                             session_id=result.session_id,
                         )
                     self.output_sink.session_started(result.session_id)
+                if command.name in {"permissions", "plan"}:
+                    self.output_sink.session_settings(context.session_settings)
                 self.output_sink.panel(
                     name=command.name,
                     title=panel_title(command.name),
                     content=result.content or "",
                 )
         except Exception as exc:
-            self.output_sink.error(f"{type(exc).__name__}: {exc}")
+            if not cancellation.is_cancelled:
+                self.output_sink.error(f"{type(exc).__name__}: {exc}")
         finally:
             if callable(bind_cancellation):
                 bind_cancellation(None)
+            if callable(bind_user_input_cancellation):
+                bind_user_input_cancellation(None)
             with self._lock:
                 self._active_cancellation = None
                 self._active_steering = None
@@ -429,7 +449,9 @@ def _build_backend(
     approval_client = JsonlApprovalClient(output_sink)
     user_input_client = JsonlUserInputClient(output_sink)
     session_settings = TerminalSessionSettings(
-        collaboration_mode=CollaborationMode(args.mode)
+        collaboration_mode=CollaborationMode(args.mode),
+        permission_mode=PermissionMode(args.permission_mode),
+        approval_policy=ApprovalPolicy(args.approval_policy),
     )
 
     def request_factory(task: str) -> RunExecutionRequest:
@@ -439,8 +461,8 @@ def _build_backend(
             provider=args.provider,
             model=args.model,
             write_enabled=not args.no_write,
-            approval_policy=ApprovalPolicy(args.approval_policy),
-            permission_mode=PermissionMode(args.permission_mode),
+            approval_policy=session_settings.approval_policy,
+            permission_mode=session_settings.permission_mode,
             sandbox_mode=SandboxMode(args.sandbox_mode),
             sandbox_image=args.sandbox_image,
             collaboration_mode=session_settings.collaboration_mode,
@@ -467,6 +489,7 @@ def _build_backend(
         mcp_config=args.mcp_config,
         output_sink=output_sink,
         approval_client=approval_client,
+        user_input_client=user_input_client,
         run_store=run_store,
         session_store=session_store,
         executor=executor,

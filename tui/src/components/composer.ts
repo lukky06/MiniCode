@@ -58,7 +58,7 @@ export class Composer extends Editor {
         ? " choose in the approval panel "
         : this.mode === "steer"
           ? " Enter steer · Esc cancel "
-          : " Enter send · Alt+Enter newline ";
+          : " Enter send · / commands · Alt+Enter newline ";
     if (visibleWidth(hint) >= width - 2) {
       return this.borderColor("─".repeat(width));
     }

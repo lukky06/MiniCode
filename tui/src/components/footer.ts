@@ -14,6 +14,9 @@ export class Footer implements Component {
   private hint = "Ctrl+C exit";
   private contextUsed: number | null = null;
   private promptBudget: number | null = null;
+  private permissionMode = "read-only";
+  private approvalPolicy = "on-request";
+  private collaborationMode = "default";
 
   setText(text: string): void {
     this.setStatus(text);
@@ -30,6 +33,16 @@ export class Footer implements Component {
     this.promptBudget = Math.max(1, promptBudget);
   }
 
+  setSessionSettings(
+    permissionMode: string,
+    approvalPolicy: string,
+    collaborationMode: string,
+  ): void {
+    this.permissionMode = permissionMode;
+    this.approvalPolicy = approvalPolicy;
+    this.collaborationMode = collaborationMode;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {
@@ -42,9 +55,10 @@ export class Footer implements Component {
       return [truncateToWidth(status, width)];
     }
 
-    const left = this.hint
-      ? `${status}  ${ui.dim(this.hint)}`
-      : status;
+    const mode = this.modeLabel();
+    const leftParts = [status, mode];
+    if (this.hint) leftParts.push(ui.dim(this.hint));
+    const left = leftParts.join("  ");
 
     if (!context || width < 52) {
       return [truncateToWidth(left, width)];
@@ -61,6 +75,11 @@ export class Footer implements Component {
         width,
       ),
     ];
+  }
+
+  private modeLabel(): string {
+    const prefix = this.collaborationMode === "plan" ? "plan · " : "";
+    return ui.dim(`${prefix}${this.permissionMode} · ${this.approvalPolicy}`);
   }
 
   private contextLabel(): string {

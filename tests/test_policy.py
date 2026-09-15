@@ -281,6 +281,7 @@ def test_run_command_requires_explicit_approval_for_side_effect_command(
     [
         ["git", "status"],
         ["git", "status", "--short", "--branch"],
+        ["git", "branch", "--show-current"],
         ["git", "ls-files"],
         ["git", "ls-files", "src/main/java"],
         ["git", "rev-parse", "HEAD"],
@@ -320,6 +321,29 @@ def test_run_command_allows_read_only_git_inspection_without_approval(tmp_path) 
 
     assert result.returncode != 0
     assert "not a git repository" in result.stderr.lower()
+
+
+def test_run_command_reports_resolve_spawn_and_execute_timings(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = run_command(
+        workspace,
+        [sys.executable, "-c", "print('ok')"],
+        timeout_seconds=10,
+        approval_granted=True,
+    )
+
+    assert result.returncode == 0
+    assert result.resolve_duration_ms >= 0
+    assert result.spawn_duration_ms >= 0
+    assert result.execute_duration_ms >= 0
+    assert (
+        result.resolve_duration_ms
+        + result.spawn_duration_ms
+        + result.execute_duration_ms
+        <= round(result.duration_seconds * 1000) + 50
+    )
 
 
 def test_sanitized_command_environment_removes_provider_credentials(monkeypatch) -> None:

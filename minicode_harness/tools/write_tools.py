@@ -88,6 +88,9 @@ class CommandRunResult(BaseModel):
     duration_seconds: float
     timeout_seconds: int
     allowlist_rule: str
+    resolve_duration_ms: int | None = None
+    spawn_duration_ms: int | None = None
+    execute_duration_ms: int | None = None
     timed_out: bool = False
     cancelled: bool = False
 
@@ -381,9 +384,13 @@ def run_command(
     normalized_argv = list(policy_result.argv)
     command = render_argv(normalized_argv)
     started_at = time.monotonic()
+    resolve_started_at = time.monotonic()
+    resolved_argv = _resolve_command_argv(normalized_argv)
+    resolve_duration_ms = _elapsed_ms(resolve_started_at)
+    spawn_started_at = time.monotonic()
     try:
         process = subprocess.Popen(
-            _resolve_command_argv(normalized_argv),
+            resolved_argv,
             cwd=guard.root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -399,8 +406,12 @@ def run_command(
             duration_seconds=time.monotonic() - started_at,
             timeout_seconds=timeout_seconds,
             allowlist_rule=policy_result.rule or "",
+            resolve_duration_ms=resolve_duration_ms,
+            spawn_duration_ms=_elapsed_ms(spawn_started_at),
         )
 
+    spawn_duration_ms = _elapsed_ms(spawn_started_at)
+    execute_started_at = time.monotonic()
     deadline = started_at + timeout_seconds
     while True:
         if cancellation_token is not None and cancellation_token.is_cancelled:
@@ -414,6 +425,9 @@ def run_command(
                 duration_seconds=time.monotonic() - started_at,
                 timeout_seconds=timeout_seconds,
                 allowlist_rule=policy_result.rule or "",
+                resolve_duration_ms=resolve_duration_ms,
+                spawn_duration_ms=spawn_duration_ms,
+                execute_duration_ms=_elapsed_ms(execute_started_at),
                 cancelled=True,
             )
         remaining = deadline - time.monotonic()
@@ -428,6 +442,9 @@ def run_command(
                 duration_seconds=time.monotonic() - started_at,
                 timeout_seconds=timeout_seconds,
                 allowlist_rule=policy_result.rule or "",
+                resolve_duration_ms=resolve_duration_ms,
+                spawn_duration_ms=spawn_duration_ms,
+                execute_duration_ms=_elapsed_ms(execute_started_at),
                 timed_out=True,
             )
         try:
@@ -443,7 +460,14 @@ def run_command(
             duration_seconds=time.monotonic() - started_at,
             timeout_seconds=timeout_seconds,
             allowlist_rule=policy_result.rule or "",
+            resolve_duration_ms=resolve_duration_ms,
+            spawn_duration_ms=spawn_duration_ms,
+            execute_duration_ms=_elapsed_ms(execute_started_at),
         )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))
 
 
 def _sanitized_command_environment() -> dict[str, str]:

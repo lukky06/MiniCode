@@ -894,6 +894,17 @@ def test_agent_loop_records_failed_verification(tmp_path, monkeypatch) -> None:
     assert command_payload["error_type"] == "command_failed"
     assert command_payload["retryable"] is True
     assert command_payload["side_effect"] == "possible"
+    timing_events = [
+        event
+        for event in _trace_events(trace_path)
+        if event.get("type") == "command_execution_timing"
+    ]
+    assert len(timing_events) == 1
+    assert timing_events[0]["tool_call_id"] == "verify"
+    assert timing_events[0]["resolve_ms"] >= 0
+    assert timing_events[0]["spawn_ms"] >= 0
+    assert timing_events[0]["execute_ms"] >= 0
+    assert timing_events[0]["total_ms"] >= timing_events[0]["execute_ms"]
 
 
 def test_agent_loop_blocks_same_failed_command_without_workspace_change(

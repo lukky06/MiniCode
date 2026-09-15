@@ -11,6 +11,31 @@ test("server JSONL parser preserves unicode and escaped newlines", () => {
   assert.deepEqual(event, { type: "assistant_delta", text: "中文\n😀" });
 });
 
+test("server JSONL parser accepts command catalog metadata", () => {
+  const event = parseServerMessage(
+    JSON.stringify({
+      type: "command_catalog",
+      commands: [
+        {
+          name: "permissions",
+          description: "View or change runtime permissions",
+          argument_hint: "[mode <value>]",
+          argument_choices: ["mode read-only", "mode workspace-write"],
+          availability: "idle",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(event.type, "command_catalog");
+  if (event.type !== "command_catalog") return;
+  assert.equal(event.commands[0]?.name, "permissions");
+  assert.deepEqual(event.commands[0]?.argument_choices, [
+    "mode read-only",
+    "mode workspace-write",
+  ]);
+});
+
 test("server JSONL parser accepts reasoning deltas", () => {
   const event = parseServerMessage(
     JSON.stringify({ type: "reasoning_delta", text: "先分析调用链。\n" }),
@@ -64,11 +89,12 @@ test("server JSONL parser accepts bounded mutation diff fields", () => {
   assert.equal(event.diff_truncated, true);
 });
 
-test("server JSONL parser accepts session approval capability", () => {
+test("server JSONL parser accepts session approval capability and tool call identity", () => {
   const event = parseServerMessage(
     JSON.stringify({
       type: "approval_required",
       id: "approval_1",
+      tool_call_id: "call_1",
       tool: "run_command",
       can_approve_session: true,
     }),
@@ -76,6 +102,7 @@ test("server JSONL parser accepts session approval capability", () => {
 
   assert.equal(event.type, "approval_required");
   if (event.type !== "approval_required") return;
+  assert.equal(event.tool_call_id, "call_1");
   assert.equal(event.can_approve_session, true);
 });
 

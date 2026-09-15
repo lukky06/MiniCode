@@ -26,6 +26,8 @@ interface ActivityEntry {
   diffPreview: string | null;
   diffTruncated: boolean;
   status: ToolStatus;
+  trackElapsed: boolean;
+  startedAtMs: number | null;
 }
 
 const MAX_VISIBLE_ENTRIES = 6;
@@ -39,7 +41,12 @@ export class Activity implements Component {
   private status: ActivityStatus = "working";
   private readonly entries: ActivityEntry[] = [];
 
-  start(id: string, action: string, target?: string | null): void {
+  start(
+    id: string,
+    action: string,
+    target?: string | null,
+    trackElapsed = false,
+  ): void {
     this.status = "working";
     const existing = this.entries.find((entry) => entry.id === id);
     if (existing) {
@@ -49,6 +56,8 @@ export class Activity implements Component {
       existing.detail = null;
       existing.diffPreview = null;
       existing.diffTruncated = false;
+      existing.trackElapsed = trackElapsed;
+      existing.startedAtMs = trackElapsed ? Date.now() : null;
       return;
     }
     this.entries.push({
@@ -59,7 +68,23 @@ export class Activity implements Component {
       diffPreview: null,
       diffTruncated: false,
       status: "running",
+      trackElapsed,
+      startedAtMs: trackElapsed ? Date.now() : null,
     });
+  }
+
+  pause(id: string, detail: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.status !== "running") return;
+    entry.startedAtMs = null;
+    entry.detail = detail;
+  }
+
+  resume(id: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.status !== "running") return;
+    entry.detail = null;
+    entry.startedAtMs = entry.trackElapsed ? Date.now() : null;
   }
 
   finish(
@@ -71,6 +96,8 @@ export class Activity implements Component {
     const entry = this.entries.find((candidate) => candidate.id === id);
     if (!entry) return;
     const successful = SUCCESSFUL_TOOL_STATUSES.has(status);
+    entry.startedAtMs = null;
+    entry.detail = null;
     entry.status =
       status === "command_timed_out"
         ? "warning"
@@ -94,7 +121,10 @@ export class Activity implements Component {
   complete(): void {
     this.status = "worked";
     for (const entry of this.entries) {
-      if (entry.status === "running") entry.status = "ok";
+      if (entry.status !== "running") continue;
+      entry.status = "ok";
+      entry.startedAtMs = null;
+      entry.detail = null;
     }
   }
 
@@ -137,7 +167,12 @@ export class Activity implements Component {
                 : ui.error("x");
       const action = ui.accent(entry.action);
       const target = entry.target ? `  ${ui.text(entry.target)}` : "";
-      const detail = entry.detail ? `  ${ui.dim(`· ${entry.detail}`)}` : "";
+      const runningDetail =
+        entry.status === "running" && entry.startedAtMs !== null
+          ? `${formatDuration(Math.max(0, Date.now() - entry.startedAtMs))} elapsed`
+          : null;
+      const renderedDetail = entry.detail ?? runningDetail;
+      const detail = renderedDetail ? `  ${ui.dim(`· ${renderedDetail}`)}` : "";
       const prefix = `  ${ui.dim(branch)} ${icon} `;
       const available = Math.max(0, width - visibleWidth(prefix));
       lines.push(

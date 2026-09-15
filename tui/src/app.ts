@@ -1,4 +1,5 @@
 import {
+  CombinedAutocompleteProvider,
   ProcessTerminal,
   Key,
   ScrollView,
@@ -15,7 +16,11 @@ import { Footer } from "./components/footer.js";
 import { Header } from "./components/header.js";
 import { ApprovalOverlay } from "./overlays/approval.js";
 import { UserInputOverlay } from "./overlays/user-input.js";
-import type { ClientMessage, ServerMessage } from "./protocol.js";
+import type {
+  ClientMessage,
+  CommandCatalogItem,
+  ServerMessage,
+} from "./protocol.js";
 import { ui } from "./theme.js";
 import { Transcript } from "./transcript.js";
 
@@ -43,15 +48,20 @@ export class MiniCodeTuiApp {
   private panelHandle: OverlayHandle | null = null;
   private pendingApprovalId: string | null = null;
   private pendingUserInputId: string | null = null;
+  private readonly runningCommandIds = new Set<string>();
+  private commandTicker: ReturnType<typeof setInterval> | null = null;
   private readonly onSubmit?: (text: string) => void;
   private readonly onClientMessage?: (message: ClientMessage) => void;
   private readonly onExit?: () => void;
+  private readonly workspace: string;
+  private commandCatalog: CommandCatalogItem[] = [];
 
   constructor(options: MiniCodeTuiOptions = {}) {
     const terminal = options.terminal ?? new ProcessTerminal();
     this.onSubmit = options.onSubmit;
     this.onClientMessage = options.onClientMessage;
     this.onExit = options.onExit;
+    this.workspace = options.workspace ?? process.cwd();
     this.header = new Header({
       workspace: options.workspace,
       provider: options.provider,
@@ -68,6 +78,16 @@ export class MiniCodeTuiApp {
         matchesKey(data, Key.escape)
       ) {
         this.clearPanel();
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (
+        this.pendingUserInputId !== null &&
+        (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")))
+      ) {
+        this.onClientMessage?.({ type: "cancel" });
+        this.clearUserInput();
+        this.footer.setStatus("Ready", "muted", "input cancelled");
         this.tui.requestRender();
         return { consume: true };
       }
@@ -154,6 +174,7 @@ export class MiniCodeTuiApp {
       this.running = true;
       this.transcript.startRun();
       this.editor.setMode("steer");
+      this.configureCommandAutocomplete();
       this.footer.setStatus("Working", "working");
     }
     this.editor.addToHistory(task);
@@ -168,6 +189,7 @@ export class MiniCodeTuiApp {
   }
 
   stop(): void {
+    this.clearCommandTicker();
     this.tui.stop();
   }
 
@@ -176,24 +198,41 @@ export class MiniCodeTuiApp {
       case "session_started":
         this.header.setSession(event.session_id);
         break;
+      case "command_catalog":
+        this.commandCatalog = event.commands;
+        this.configureCommandAutocomplete();
+        break;
+      case "session_settings":
+        this.footer.setSessionSettings(
+          event.permission_mode,
+          event.approval_policy,
+          event.collaboration_mode,
+        );
+        break;
       case "run_started":
         this.running = true;
         this.transcript.startRun();
         this.editor.setMode("steer");
+        this.configureCommandAutocomplete();
         this.footer.setStatus("Working", "working");
         break;
       case "context":
         this.footer.setContext(event.used, event.prompt_budget);
         break;
-      case "tool_started":
+      case "tool_started": {
+        const trackElapsed = event.tool === "run_command";
         this.transcript.startTool(
           event.id,
           toolAction(event.tool),
           event.target,
+          trackElapsed,
         );
+        if (trackElapsed) this.startCommandTicker(event.id);
         this.footer.setStatus("Working", "working");
         break;
+      }
       case "tool_finished":
+        if (event.tool === "run_command") this.finishCommandTicker(event.id);
         this.transcript.finishTool(event.id, event.status, event.summary, {
           commandStatus: event.command_status,
           returncode: event.returncode,
@@ -213,11 +252,8 @@ export class MiniCodeTuiApp {
         this.footer.setStatus("Answering", "working");
         break;
       case "approval_required":
-        this.transcript.startTool(
-          event.id,
-          "Approval required",
-          event.summary ?? event.tool,
-        );
+        this.transcript.pauseTool(event.tool_call_id, "waiting for approval");
+        if (event.tool === "run_command") this.pauseCommandTicker(event.tool_call_id);
         this.showApproval(event);
         this.editor.setMode("approval");
         this.footer.setStatus("Permission required", "warning");
@@ -229,11 +265,14 @@ export class MiniCodeTuiApp {
         break;
       case "run_finished":
         this.running = false;
+        this.clearCommandTicker();
+        this.runningCommandIds.clear();
         this.clearApproval();
         this.clearUserInput();
         this.transcript.completeReasoning();
         this.transcript.completeActivity();
         this.editor.setMode("ask");
+        this.configureCommandAutocomplete();
         this.footer.setStatus(
           event.status,
           event.status === "completed" ? "success" : "muted",
@@ -243,6 +282,8 @@ export class MiniCodeTuiApp {
       case "error":
         if (event.fatal) {
           this.running = false;
+          this.clearCommandTicker();
+          this.runningCommandIds.clear();
           this.clearApproval();
           this.clearUserInput();
           this.clearPanel();
@@ -260,6 +301,63 @@ export class MiniCodeTuiApp {
     this.tui.requestRender();
   }
 
+  private configureCommandAutocomplete(): void {
+    const commands = this.commandCatalog
+      .filter((command) =>
+        this.running
+          ? command.availability !== "idle"
+          : command.availability !== "active",
+      )
+      .map((command) => ({
+        name: command.name,
+        description: command.description,
+        argumentHint: command.argument_hint ?? undefined,
+        getArgumentCompletions: command.argument_choices.length > 0
+          ? (argumentPrefix: string) => {
+              const prefix = argumentPrefix.trimStart().toLowerCase();
+              return command.argument_choices
+                .filter((choice) => choice.toLowerCase().startsWith(prefix))
+                .map((choice) => ({
+                  value: choice,
+                  label: choice,
+                }));
+            }
+          : undefined,
+      }));
+    this.editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider(commands, this.workspace),
+    );
+  }
+
+  private startCommandTicker(toolCallId: string): void {
+    this.runningCommandIds.add(toolCallId);
+    if (this.commandTicker !== null) return;
+    this.commandTicker = setInterval(() => {
+      if (this.runningCommandIds.size === 0) {
+        this.clearCommandTicker();
+        return;
+      }
+      this.tui.requestRender();
+    }, 1_000);
+    this.commandTicker.unref?.();
+  }
+
+  private pauseCommandTicker(toolCallId: string): void {
+    this.runningCommandIds.delete(toolCallId);
+    if (this.runningCommandIds.size === 0) this.clearCommandTicker();
+  }
+
+  private finishCommandTicker(toolCallId: string): void {
+    this.pauseCommandTicker(toolCallId);
+  }
+
+  private clearCommandTicker(): void {
+    if (this.commandTicker !== null) {
+      clearInterval(this.commandTicker);
+      this.commandTicker = null;
+    }
+  }
+
   private showApproval(
     event: Extract<ServerMessage, { type: "approval_required" }>,
   ): void {
@@ -268,6 +366,13 @@ export class MiniCodeTuiApp {
     this.editor.disableSubmit = true;
     const overlay = new ApprovalOverlay(event, (decision) => {
       if (this.pendingApprovalId !== event.id) return;
+      if (
+        event.tool === "run_command" &&
+        (decision === "approve" || decision === "approve_session")
+      ) {
+        this.transcript.resumeTool(event.tool_call_id);
+        this.startCommandTicker(event.tool_call_id);
+      }
       this.onClientMessage?.({
         type: "approval_response",
         id: event.id,

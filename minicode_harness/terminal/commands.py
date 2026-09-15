@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import shlex
 
 from minicode_harness.history import (
@@ -16,6 +17,8 @@ from minicode_harness.report import (
     generate_run_report,
 )
 from minicode_harness.resume import latest_recoverable_run_id, resume_run
+from minicode_harness.state import UserInputRequest
+from minicode_harness.policy import ApprovalPolicy, PermissionMode
 from minicode_harness.runtime import CollaborationMode
 from minicode_harness.terminal.status import (
     build_terminal_status,
@@ -26,26 +29,54 @@ from minicode_harness.terminal.types import CommandResult, SlashCommand, Termina
 from minicode_harness.tools import inspect_git_diff
 
 
-SLASH_COMMANDS = {
-    "status",
-    "sessions",
-    "runs",
-    "context",
-    "compact",
-    "memory",
-    "trace",
-    "recover",
-    "report",
-    "diff",
-    "model",
-    "permissions",
-    "plan",
-    "rename",
-    "fork",
-    "review",
-    "help",
-    "exit",
-}
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    description: str
+    argument_hint: str | None = None
+    argument_choices: tuple[str, ...] = ()
+    availability: str = "idle"
+
+
+_COMMAND_SPECS = (
+    CommandSpec(
+        "permissions",
+        "View or change runtime permissions",
+        "[mode <value> | approval <value>]",
+        (
+            "mode read-only",
+            "mode workspace-write",
+            "mode full-access",
+            "approval on-request",
+            "approval never",
+        ),
+    ),
+    CommandSpec("plan", "Set planning mode", "[on|off|status]", ("on", "off", "status")),
+    CommandSpec("diff", "Show current workspace diff"),
+    CommandSpec("review", "Review current Git diff", "[focus]"),
+    CommandSpec("context", "Inspect latest context budget", "[run_id]"),
+    CommandSpec("compact", "Compact current Session context", "[focus]"),
+    CommandSpec("status", "Show workspace and latest Run"),
+    CommandSpec("sessions", "Show recent workspace Sessions"),
+    CommandSpec("runs", "Show Runs in the current Session", "[run_id]"),
+    CommandSpec("rename", "Rename the current Session", "<name>"),
+    CommandSpec("fork", "Fork the current Session", "[run]"),
+    CommandSpec("recover", "Recover a Run in the current Session", "[run_id]"),
+    CommandSpec("memory", "Show Repository Memory index"),
+    CommandSpec("trace", "Show latest Run trace", "[run_id]"),
+    CommandSpec("report", "Generate a Run report", "[run_id]"),
+    CommandSpec("model", "Show current provider and model"),
+    CommandSpec("help", "Show command reference"),
+    CommandSpec("exit", "Exit MiniCode"),
+)
+
+SLASH_COMMANDS = {spec.name for spec in _COMMAND_SPECS}
+
+
+def command_catalog() -> tuple[CommandSpec, ...]:
+    """Return the ordered terminal command catalog used by help and TUI completion."""
+
+    return _COMMAND_SPECS
 
 
 def parse_slash_command(text: str) -> SlashCommand:
@@ -115,26 +146,7 @@ class SlashCommandRouter:
         if command.name == "plan":
             return self._plan_mode(command, context)
         if command.name == "permissions":
-            return CommandResult(
-                status="completed",
-                content="\n".join(
-                    [
-                        f"Workspace: {context.workspace}",
-                        f"Write tools enabled: {context.write_enabled}",
-                        f"Permission mode: {context.permission_mode.value}",
-                        f"Approval policy: {context.approval_policy.value}",
-                        f"Command sandbox: {context.sandbox_mode.value}",
-                        *(
-                            [f"Sandbox image: {context.sandbox_image}"]
-                            if context.sandbox_image
-                            else []
-                        ),
-                        f"Repository Memory: {context.repository_memory_enabled}",
-                        f"Subagents enabled: {context.subagents_enabled}",
-                        f"MCP config: {context.mcp_config or 'none'}",
-                    ]
-                ),
-            )
+            return self._permissions(command, context)
         if command.name == "rename":
             if context.executor is None or context.executor.session_memory is None:
                 return CommandResult(
@@ -331,12 +343,149 @@ class SlashCommandRouter:
         )
 
     @staticmethod
+    def _permissions(
+        command: SlashCommand,
+        context: TerminalContext,
+    ) -> CommandResult:
+        settings = context.session_settings
+        if not command.arguments and context.user_input_client is not None:
+            mode_response = context.user_input_client.choose(
+                UserInputRequest(
+                    question="Choose the permission mode for subsequent Runs.",
+                    options=[
+                        {
+                            "label": "Read only",
+                            "description": "Read and inspect; side effects require approval or stay unavailable.",
+                        },
+                        {
+                            "label": "Workspace write",
+                            "description": "Allow admitted workspace edits without per-edit approval.",
+                        },
+                        {
+                            "label": "Full access",
+                            "description": "Allow admitted side effects with fewer approval prompts.",
+                        },
+                    ],
+                )
+            )
+            selected_permission_mode = (
+                PermissionMode.READ_ONLY,
+                PermissionMode.WORKSPACE_WRITE,
+                PermissionMode.FULL_ACCESS,
+            )[mode_response.selected_index]
+            approval_response = context.user_input_client.choose(
+                UserInputRequest(
+                    question="Choose the approval policy for subsequent Runs.",
+                    options=[
+                        {
+                            "label": "On request",
+                            "description": "Ask when the active permission mode requires approval.",
+                        },
+                        {
+                            "label": "Never",
+                            "description": "Do not prompt; denied operations remain blocked.",
+                        },
+                    ],
+                )
+            )
+            selected_approval_policy = (
+                ApprovalPolicy.ON_REQUEST,
+                ApprovalPolicy.NEVER,
+            )[approval_response.selected_index]
+            settings.permission_mode = selected_permission_mode
+            settings.approval_policy = selected_approval_policy
+            return CommandResult(
+                status="completed",
+                content=(
+                    f"Permission mode: {settings.permission_mode.value}\n"
+                    f"Approval policy: {settings.approval_policy.value}\n"
+                    "Applied to subsequent Runs."
+                ),
+            )
+        if not command.arguments or command.arguments == ["status"]:
+            return CommandResult(
+                status="completed",
+                content="\n".join(
+                    [
+                        f"Workspace: {context.workspace}",
+                        f"Write tools enabled: {context.write_enabled}",
+                        f"Permission mode: {settings.permission_mode.value}",
+                        f"Approval policy: {settings.approval_policy.value}",
+                        f"Command sandbox: {context.sandbox_mode.value}",
+                        *(
+                            [f"Sandbox image: {context.sandbox_image}"]
+                            if context.sandbox_image
+                            else []
+                        ),
+                        f"Repository Memory: {context.repository_memory_enabled}",
+                        f"Subagents enabled: {context.subagents_enabled}",
+                        f"MCP config: {context.mcp_config or 'none'}",
+                    ]
+                ),
+            )
+        if len(command.arguments) != 2:
+            raise ValueError(
+                "/permissions accepts: status, mode <value>, or approval <value>."
+            )
+        field, value = (item.strip().lower() for item in command.arguments)
+        if field == "mode":
+            try:
+                settings.permission_mode = PermissionMode(value)
+            except ValueError as exc:
+                raise ValueError(
+                    "Permission mode must be read-only, workspace-write, or full-access."
+                ) from exc
+            return CommandResult(
+                status="completed",
+                content=f"Permission mode set to {settings.permission_mode.value} for subsequent Runs.",
+            )
+        if field == "approval":
+            try:
+                settings.approval_policy = ApprovalPolicy(value)
+            except ValueError as exc:
+                raise ValueError("Approval policy must be on-request or never.") from exc
+            return CommandResult(
+                status="completed",
+                content=f"Approval policy set to {settings.approval_policy.value} for subsequent Runs.",
+            )
+        raise ValueError(
+            "/permissions accepts: status, mode <value>, or approval <value>."
+        )
+
+    @staticmethod
     def _plan_mode(
         command: SlashCommand,
         context: TerminalContext,
     ) -> CommandResult:
         if len(command.arguments) > 1:
             raise ValueError("/plan accepts at most one argument: on, off, or status.")
+        if not command.arguments and context.user_input_client is not None:
+            response = context.user_input_client.choose(
+                UserInputRequest(
+                    question="Choose the working mode for subsequent Runs.",
+                    options=[
+                        {
+                            "label": "Default",
+                            "description": "Allow the normal tool surface under the current permissions.",
+                        },
+                        {
+                            "label": "Plan",
+                            "description": "Use read-only exploration and planning tools.",
+                        },
+                    ],
+                )
+            )
+            context.session_settings.collaboration_mode = (
+                CollaborationMode.DEFAULT,
+                CollaborationMode.PLAN,
+            )[response.selected_index]
+            enabled = (
+                context.session_settings.collaboration_mode == CollaborationMode.PLAN
+            )
+            return CommandResult(
+                status="completed",
+                content=f"Plan mode: {'on' if enabled else 'off'} for subsequent Runs.",
+            )
         action = command.arguments[0].strip().lower() if command.arguments else "status"
         if action == "status":
             enabled = context.session_settings.collaboration_mode == CollaborationMode.PLAN
@@ -388,27 +537,17 @@ def _strip_matching_quotes(token: str) -> str:
 
 
 def _help_text() -> str:
-    return "\n".join(
+    lines = ["Commands:"]
+    for spec in command_catalog():
+        usage = f"/{spec.name}"
+        if spec.argument_hint:
+            usage += f" {spec.argument_hint}"
+        lines.append(f"  {usage:<34} {spec.description}")
+    lines.extend(
         [
-            "Commands:",
-            "  /status        workspace and latest run",
-            "  /sessions      recent workspace Sessions",
-            "  /runs          Runs in the current Session",
-            "  /context       latest context budget breakdown",
-            "  /compact [focus] compact session semantics within normal safety rules",
-            "  /memory        repository memory",
-            "  /trace         latest run trace",
-            "  /recover       recover a Run in the current Session",
-            "  /report        generate a run report",
-            "  /diff          current git diff",
-            "  /model         current provider and model",
-            "  /permissions   runtime permissions",
-            "  /plan [on|off|status] set the collaboration mode for subsequent Runs",
-            "  /rename <name> name the current Session",
-            "  /fork [run]    fork the current Session, optionally at a completed Run boundary",
-            "  /review [focus] review the current Git diff with a read-only subagent",
-            "  /exit          exit MiniCode",
             "",
+            "Type / in the interactive terminal to browse commands.",
             "Enter submits a task. Esc+Enter or Ctrl+O inserts a newline.",
         ]
     )
+    return "\n".join(lines)

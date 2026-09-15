@@ -47,13 +47,26 @@ export class Transcript implements Component {
     return this.reasoningExpanded;
   }
 
-  startTool(id: string, action: string, target?: string | null): void {
+  startTool(
+    id: string,
+    action: string,
+    target?: string | null,
+    trackElapsed = false,
+  ): void {
     this.completeReasoning();
     if (this.activity === null) {
       this.activity = new Activity();
       this.stack.addChild(this.activity);
     }
-    this.activity.start(id, action, target);
+    this.activity.start(id, action, target, trackElapsed);
+  }
+
+  pauseTool(id: string, detail: string): void {
+    this.activity?.pause(id, detail);
+  }
+
+  resumeTool(id: string): void {
+    this.activity?.resume(id);
   }
 
   finishTool(

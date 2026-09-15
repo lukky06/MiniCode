@@ -12,7 +12,7 @@ from minicode_harness.policy import ApprovalPolicy, PermissionMode
 from minicode_harness.runtime import CollaborationMode, DEFAULT_COLLABORATION_MODE
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.steering import SteeringQueue
-from minicode_harness.state import ApprovalClient, RunStore
+from minicode_harness.state import ApprovalClient, RunStore, UserInputClient
 from minicode_harness.tools import SandboxMode
 
 if TYPE_CHECKING:
@@ -79,6 +79,8 @@ class TerminalSessionSettings:
     """Mutable terminal-only defaults applied when the next Run starts."""
 
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
+    permission_mode: PermissionMode = PermissionMode.READ_ONLY
+    approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class TerminalContext:
     output_sink: OutputSink
     approval_client: ApprovalClient
     run_store: RunStore
+    user_input_client: UserInputClient | None = None
     approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
     permission_mode: PermissionMode = PermissionMode.READ_ONLY
     sandbox_mode: SandboxMode = SandboxMode.LOCAL

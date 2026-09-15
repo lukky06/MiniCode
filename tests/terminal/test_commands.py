@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from minicode_harness.output import NullOutputSink
+from minicode_harness.policy import ApprovalPolicy, PermissionMode
 from minicode_harness.state import ReplSessionStore
 from minicode_harness.state import (
     CheckpointStore,
@@ -11,7 +12,7 @@ from minicode_harness.state import (
 )
 from minicode_harness.terminal import commands as terminal_commands
 from minicode_harness.terminal.commands import SlashCommandRouter, parse_slash_command
-from minicode_harness.terminal.types import TerminalContext
+from minicode_harness.terminal.types import TerminalContext, TerminalSessionSettings
 from minicode_harness.trace import TraceWriter
 
 
@@ -73,6 +74,110 @@ def test_router_handles_status_model_permissions_and_plan(tmp_path) -> None:
     assert "Next Run mode: plan" in (plan_status_on.content or "")
     assert "disabled for subsequent Runs" in (plan_off.content or "")
     assert context.session_settings.collaboration_mode.value == "default"
+
+
+def test_command_catalog_is_ordered_and_exposes_argument_choices() -> None:
+    catalog = terminal_commands.command_catalog()
+
+    assert [item.name for item in catalog[:6]] == [
+        "permissions",
+        "plan",
+        "diff",
+        "review",
+        "context",
+        "compact",
+    ]
+    permissions = next(item for item in catalog if item.name == "permissions")
+    assert permissions.argument_hint == "[mode <value> | approval <value>]"
+    assert permissions.argument_choices == (
+        "mode read-only",
+        "mode workspace-write",
+        "mode full-access",
+        "approval on-request",
+        "approval never",
+    )
+    assert permissions.availability == "idle"
+
+
+def test_permissions_command_updates_session_defaults_for_subsequent_runs(tmp_path) -> None:
+    settings = TerminalSessionSettings()
+    context = _context(tmp_path)
+    context = TerminalContext(
+        **{
+            **context.__dict__,
+            "session_settings": settings,
+        }
+    )
+    router = SlashCommandRouter()
+
+    write_mode = router.execute(
+        parse_slash_command("/permissions mode workspace-write"),
+        context,
+    )
+    approval = router.execute(
+        parse_slash_command("/permissions approval never"),
+        context,
+    )
+    status = router.execute(parse_slash_command("/permissions status"), context)
+
+    assert write_mode.status == "completed"
+    assert approval.status == "completed"
+    assert settings.permission_mode == PermissionMode.WORKSPACE_WRITE
+    assert settings.approval_policy == ApprovalPolicy.NEVER
+    assert "Permission mode: workspace-write" in (status.content or "")
+    assert "Approval policy: never" in (status.content or "")
+
+
+def test_permissions_picker_applies_both_choices_atomically(tmp_path) -> None:
+    class InterruptedInput:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def choose(self, request):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(selected_index=1)
+            raise RuntimeError("selection cancelled")
+
+    settings = TerminalSessionSettings()
+    base = _context(tmp_path)
+    context = TerminalContext(
+        **{
+            **base.__dict__,
+            "session_settings": settings,
+            "user_input_client": InterruptedInput(),
+        }
+    )
+
+    try:
+        SlashCommandRouter().execute(parse_slash_command("/permissions"), context)
+    except RuntimeError as exc:
+        assert "cancelled" in str(exc)
+    else:
+        raise AssertionError("interrupted picker must surface cancellation")
+
+    assert settings.permission_mode == PermissionMode.READ_ONLY
+    assert settings.approval_policy == ApprovalPolicy.ON_REQUEST
+
+
+def test_permissions_command_rejects_invalid_values(tmp_path) -> None:
+    router = SlashCommandRouter()
+    context = _context(tmp_path)
+
+    bad_mode = router.execute(
+        parse_slash_command("/permissions mode root"),
+        context,
+    )
+    bad_approval = router.execute(
+        parse_slash_command("/permissions approval always"),
+        context,
+    )
+
+    assert bad_mode.status == "failed"
+    assert "read-only, workspace-write, or full-access" in (bad_mode.content or "")
+    assert bad_approval.status == "failed"
+    assert "on-request or never" in (bad_approval.content or "")
 
 
 def test_router_rejects_invalid_plan_arguments(tmp_path) -> None:

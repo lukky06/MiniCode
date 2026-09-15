@@ -56,6 +56,7 @@ def test_approval_client_emits_safe_preview_and_resolves_matching_id() -> None:
     event = parse_server_message(stream.getvalue().splitlines()[0])
     assert event.type == "approval_required"
     assert event.id == "approval_1"
+    assert event.tool_call_id == "call_1"
     assert event.summary == "Run focused tests"
     assert event.can_approve_session is True
     assert "pytest tests/test_x.py -q" in (event.details or "")

@@ -17,6 +17,26 @@ class SessionStarted(_ProtocolMessage):
     session_id: str
 
 
+class CommandCatalogItem(_ProtocolMessage):
+    name: str
+    description: str
+    argument_hint: str | None = None
+    argument_choices: list[str] = Field(default_factory=list)
+    availability: Literal["idle", "active", "both"] = "idle"
+
+
+class CommandCatalogEvent(_ProtocolMessage):
+    type: Literal["command_catalog"] = "command_catalog"
+    commands: list[CommandCatalogItem]
+
+
+class SessionSettingsEvent(_ProtocolMessage):
+    type: Literal["session_settings"] = "session_settings"
+    permission_mode: str
+    approval_policy: str
+    collaboration_mode: str
+
+
 class RunStarted(_ProtocolMessage):
     type: Literal["run_started"] = "run_started"
     run_id: str
@@ -66,6 +86,7 @@ class ReasoningDelta(_ProtocolMessage):
 class ApprovalRequired(_ProtocolMessage):
     type: Literal["approval_required"] = "approval_required"
     id: str
+    tool_call_id: str
     tool: str
     summary: str | None = None
     details: str | None = None
@@ -144,6 +165,8 @@ class CancelMessage(_ProtocolMessage):
 
 ServerMessage: TypeAlias = Annotated[
     SessionStarted
+    | CommandCatalogEvent
+    | SessionSettingsEvent
     | RunStarted
     | ContextEvent
     | ToolStarted

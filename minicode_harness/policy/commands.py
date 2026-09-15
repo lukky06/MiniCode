@@ -604,6 +604,8 @@ def _git_read_rule(argv: list[str]) -> tuple[str, CommandCategory] | None:
         for arg in argv[2:]
     ):
         return "git status [read-only]", CommandCategory.INFORMATION
+    if subcommand == "branch" and argv[2:] == ["--show-current"]:
+        return "git branch --show-current", CommandCategory.INFORMATION
     if subcommand == "diff" and all(
         arg in {"--stat", "--name-only", "--cached", "--staged"}
         for arg in argv[2:]

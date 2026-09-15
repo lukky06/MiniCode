@@ -28,7 +28,12 @@ from minicode_harness.terminal.types import (
 import minicode_harness.tui_bridge.backend as backend_module
 from minicode_harness.tui_bridge.approval import JsonlApprovalClient
 from minicode_harness.tui_bridge.user_input import JsonlUserInputClient
-from minicode_harness.tui_bridge.backend import JsonlBackend, _launch_session
+from minicode_harness.tui_bridge.backend import (
+    JsonlBackend,
+    _build_backend,
+    _build_parser,
+    _launch_session,
+)
 from minicode_harness.tui_bridge.output import JsonlOutputSink
 from minicode_harness.tui_bridge.protocol import (
     ApprovalResponseMessage,
@@ -214,6 +219,195 @@ def test_backend_eof_requests_cooperative_cancellation() -> None:
     assert any(event.type == "run_finished" and event.status == "cancelled" for event in events)
 
 
+def test_backend_session_start_emits_command_catalog(tmp_path: Path) -> None:
+    executor = BlockingExecutor()
+    backend, _, stream = _backend(executor)
+    backend.command_context = TerminalContext(
+        workspace=tmp_path,
+        provider="test",
+        model=None,
+        write_enabled=True,
+        repository_memory_enabled=True,
+        subagents_enabled=True,
+        mcp_config=None,
+        output_sink=NullOutputSink(),
+        approval_client=StaticApprovalClient(),
+        run_store=RunStore(tmp_path / "catalog-runs"),
+    )
+
+    backend.run_forever(StringIO(""))
+
+    events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
+    assert [event.type for event in events[:3]] == [
+        "session_started",
+        "command_catalog",
+        "session_settings",
+    ]
+    catalog = events[1]
+    assert [item.name for item in catalog.commands[:3]] == [
+        "permissions",
+        "plan",
+        "diff",
+    ]
+    permissions = catalog.commands[0]
+    assert permissions.argument_choices == [
+        "mode read-only",
+        "mode workspace-write",
+        "mode full-access",
+        "approval on-request",
+        "approval never",
+    ]
+    settings_event = events[2]
+    assert settings_event.permission_mode == "read-only"
+    assert settings_event.approval_policy == "on-request"
+    assert settings_event.collaboration_mode == "default"
+
+
+def test_built_backend_permission_command_changes_next_run_defaults(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-settings"
+    workspace.mkdir()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--provider",
+            "test",
+            "--permission-mode",
+            "read-only",
+            "--approval-policy",
+            "on-request",
+        ]
+    )
+    backend = _build_backend(args, output_sink=sink)
+
+    initial = backend.request_factory("before")
+    backend.handle_message(CommandMessage(text="/permissions mode workspace-write"))
+    _wait_for_event_type(stream, "panel")
+    backend.handle_message(CommandMessage(text="/permissions approval never"))
+    deadline = time.monotonic() + 1.0
+    while stream.getvalue().count('"type":"panel"') < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    updated = backend.request_factory("after")
+    backend.close(timeout=1.0)
+
+    assert initial.permission_mode.value == "read-only"
+    assert initial.approval_policy.value == "on-request"
+    assert updated.permission_mode.value == "workspace-write"
+    assert updated.approval_policy.value == "never"
+
+
+def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-picker"
+    workspace.mkdir()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--provider",
+            "test",
+            "--permission-mode",
+            "read-only",
+            "--approval-policy",
+            "on-request",
+        ]
+    )
+    backend = _build_backend(args, output_sink=sink)
+
+    backend.handle_message(CommandMessage(text="/permissions"))
+    _wait_for_event_type(stream, "user_input_required")
+    events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
+    mode_prompt = next(event for event in events if event.type == "user_input_required")
+    assert [option.label for option in mode_prompt.options] == [
+        "Read only",
+        "Workspace write",
+        "Full access",
+    ]
+
+    backend.handle_message(
+        UserInputResponseMessage(id=mode_prompt.id, selected_index=1)
+    )
+    deadline = time.monotonic() + 1.0
+    approval_prompt = None
+    while time.monotonic() < deadline:
+        events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
+        prompts = [event for event in events if event.type == "user_input_required"]
+        if len(prompts) >= 2:
+            approval_prompt = prompts[-1]
+            break
+        time.sleep(0.005)
+    assert approval_prompt is not None
+    assert [option.label for option in approval_prompt.options] == [
+        "On request",
+        "Never",
+    ]
+
+    backend.handle_message(
+        UserInputResponseMessage(id=approval_prompt.id, selected_index=0)
+    )
+    _wait_for_event_type(stream, "panel")
+    deadline = time.monotonic() + 1.0
+    while backend.is_active and time.monotonic() < deadline:
+        time.sleep(0.005)
+    updated = backend.request_factory("after picker")
+    backend.close(timeout=1.0)
+
+    assert updated.permission_mode.value == "workspace-write"
+    assert updated.approval_policy.value == "on-request"
+
+
+def test_cancelling_idle_command_picker_does_not_emit_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-cancel-picker"
+    workspace.mkdir()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        ["--workspace", str(workspace), "--provider", "test"]
+    )
+    backend = _build_backend(args, output_sink=sink)
+
+    backend.handle_message(CommandMessage(text="/permissions"))
+    _wait_for_event_type(stream, "user_input_required")
+    backend.handle_message(CancelMessage())
+    deadline = time.monotonic() + 1.0
+    while backend.is_active and time.monotonic() < deadline:
+        time.sleep(0.005)
+    backend.close(timeout=1.0)
+
+    events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
+    assert not [event for event in events if event.type == "error"]
+
+
+def test_plan_command_without_arguments_uses_interactive_picker(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-plan-picker"
+    workspace.mkdir()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        ["--workspace", str(workspace), "--provider", "test"]
+    )
+    backend = _build_backend(args, output_sink=sink)
+
+    backend.handle_message(CommandMessage(text="/plan"))
+    _wait_for_event_type(stream, "user_input_required")
+    events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
+    prompt = next(event for event in events if event.type == "user_input_required")
+    assert [option.label for option in prompt.options] == ["Default", "Plan"]
+
+    backend.handle_message(UserInputResponseMessage(id=prompt.id, selected_index=1))
+    _wait_for_event_type(stream, "panel")
+    deadline = time.monotonic() + 1.0
+    while backend.is_active and time.monotonic() < deadline:
+        time.sleep(0.005)
+    updated = backend.request_factory("after plan picker")
+    backend.close(timeout=1.0)
+
+    assert updated.collaboration_mode == CollaborationMode.PLAN
+
+
 def test_backend_invalid_input_is_protocol_error_not_exception() -> None:
     executor = BlockingExecutor()
     backend, _, stream = _backend(executor)
@@ -222,8 +416,9 @@ def test_backend_invalid_input_is_protocol_error_not_exception() -> None:
 
     events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
     assert events[0].type == "session_started"
-    assert events[1].type == "error"
-    assert "Invalid protocol message" in events[1].message
+    assert events[1].type == "command_catalog"
+    assert events[2].type == "error"
+    assert "Invalid protocol message" in events[2].message
 
 
 def test_backend_routes_idle_command_through_shared_router(tmp_path: Path) -> None:

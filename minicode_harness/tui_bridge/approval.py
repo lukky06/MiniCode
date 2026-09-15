@@ -50,6 +50,7 @@ class JsonlApprovalClient:
             self.output_sink.writer.emit(
                 ApprovalRequired(
                     id=request.id,
+                    tool_call_id=request.tool_call_id,
                     tool=request.tool_name,
                     summary=summary,
                     details=details,

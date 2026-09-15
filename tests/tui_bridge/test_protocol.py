@@ -74,6 +74,7 @@ from minicode_harness.tui_bridge.protocol import (
         AssistantDelta(text="第一行\n第二行 😀"),
         ApprovalRequired(
             id="approval_1",
+            tool_call_id="call_1",
             tool="run_command",
             summary="运行聚焦测试",
             details="pytest tests/test_x.py -q",
