@@ -119,7 +119,7 @@ MiniCode 将长期会话和单次运行分开管理：
 - **Run** 表示一次具体 Agent 执行；
 - **Checkpoint** 保存未完成 Run 的可恢复状态。
 
-每个 Run 将完整 Canonical History 保存在单独的 `history.json`。Checkpoint 只记录已接受的 History 长度与摘要，以及工具预算、任务状态和工作区摘要。恢复时先校验 History 前缀，再重新检查 Workspace 状态，避免继续执行超出恢复点的消息或已经被外部修改的代码状态。
+每个 Run 将完整 Canonical History 作为追加日志保存在 `history.jsonl`。Checkpoint 只记录已接受的 History 长度与摘要，以及工具预算、任务状态和工作区摘要。正常保存只追加新消息；如果崩溃留下尚未被 Checkpoint 接受的尾部记录，恢复后的下一次保存会先回到已确认前缀再继续追加。恢复时先校验 History 前缀，再重新检查 Workspace 状态，避免继续执行超出恢复点的消息或已经被外部修改的代码状态。
 
 模型层的瞬时错误，例如限流、连接失败、超时和服务过载，会经过有界恢复策略处理。上下文超限会交回 Context 层压缩，而已经成功执行的工具不会因为模型重试被自动重放。
 

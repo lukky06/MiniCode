@@ -57,9 +57,25 @@ class ReplSessionMemory(BaseModel):
     )
     command_approval_grants: list[str] = Field(default_factory=list, max_length=MAX_COMMAND_APPROVAL_GRANTS)
     _persist_callback: Callable[["ReplSessionMemory"], None] | None = PrivateAttr(default=None)
+    _is_persisted: bool = PrivateAttr(default=False)
 
-    def bind_persistence(self, callback: Callable[["ReplSessionMemory"], None] | None) -> None:
+    def bind_persistence(
+        self,
+        callback: Callable[["ReplSessionMemory"], None] | None,
+        *,
+        persisted: bool = False,
+    ) -> None:
         self._persist_callback = callback
+        self._is_persisted = persisted
+
+    def ensure_persisted(self) -> None:
+        """Persist a lazily-created Session before its first durable Run."""
+
+        if self._is_persisted:
+            return
+        if self._persist_callback is None:
+            return
+        self._persist_callback(self)
 
     def add_user_turn(self, content: str, *, run_id: str | None = None) -> DialogueTurn:
         turn = DialogueTurn(role="user", content=content, run_id=run_id)
@@ -158,11 +174,17 @@ class ReplSessionStore:
     def sessions_root(self) -> Path:
         return self.data_dir / "sessions"
 
-    def create(self, workspace: Path | str) -> ReplSessionMemory:
+    def create(
+        self,
+        workspace: Path | str,
+        *,
+        persist: bool = True,
+    ) -> ReplSessionMemory:
         resolved = self._resolved_workspace(workspace)
         session = ReplSessionMemory(workspace=resolved)
-        session.bind_persistence(self.save)
-        self.save(session)
+        session.bind_persistence(self.save, persisted=False)
+        if persist:
+            self.save(session)
         return session
 
     def fork(
@@ -209,7 +231,7 @@ class ReplSessionStore:
             message_history=messages,
             compaction_state=compaction_state,
         )
-        forked.bind_persistence(self.save)
+        forked.bind_persistence(self.save, persisted=False)
         self.save(forked)
         return forked
 
@@ -222,7 +244,7 @@ class ReplSessionStore:
         self._validate_session_id(session_id)
         path = self.session_path(resolved, session_id)
         session = self._read_session(path, resolved)
-        session.bind_persistence(self.save)
+        session.bind_persistence(self.save, persisted=True)
         return session
 
     def load_latest(self, workspace: Path | str) -> ReplSessionMemory:
@@ -245,7 +267,7 @@ class ReplSessionStore:
                     session = self._read_session(path, resolved)
                 except (OSError, ValueError):
                     continue
-                session.bind_persistence(self.save)
+                session.bind_persistence(self.save, persisted=True)
                 sessions.append(session)
         sessions.sort(
             key=lambda item: (item.updated_at, item.created_at, item.session_id),
@@ -281,6 +303,7 @@ class ReplSessionStore:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(session.model_dump_json(indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
+        session._is_persisted = True
         return path
 
     def delete(self, workspace: Path | str, session_id: str) -> bool:

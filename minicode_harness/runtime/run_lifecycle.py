@@ -119,14 +119,15 @@ class RunLifecycle:
             memory_snapshot_path=snapshot.memory_snapshot_path,
         )
 
-    def persist_and_checkpoint(
+    def checkpoint_progress(
         self,
         snapshot: RunSnapshot,
         *,
         status: str,
         reason: str,
     ) -> None:
-        self.persist_session(snapshot)
+        """Persist Run recovery state without committing the conversation Session."""
+
         self.save_checkpoint(snapshot, status=status, reason=reason)
 
     def finish_completed(

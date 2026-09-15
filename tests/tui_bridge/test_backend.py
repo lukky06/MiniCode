@@ -126,6 +126,25 @@ def test_backend_launch_session_preserves_new_continue_and_exact(tmp_path) -> No
     assert fresh.session_id not in {first.session_id, second.session_id}
 
 
+def test_backend_new_session_is_not_persisted_until_first_run(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = ReplSessionStore(tmp_path / "data")
+
+    fresh = _launch_session(
+        store,
+        workspace,
+        session_mode="new",
+        session_id=None,
+    )
+
+    assert store.list(workspace) == []
+
+    fresh.ensure_persisted()
+
+    assert store.load(workspace, fresh.session_id).session_id == fresh.session_id
+
+
 def test_backend_launch_session_rejects_invalid_id_combinations(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

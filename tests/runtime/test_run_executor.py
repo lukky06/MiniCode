@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from minicode_harness.context import SEMANTIC_HISTORY_HEADING
 from minicode_harness.context.session_projection import project_canonical_messages
 from minicode_harness.loop import AgentRunResult
-from minicode_harness.state import ReplSessionMemory
+from minicode_harness.state import ReplSessionMemory, ReplSessionStore
 from minicode_harness.memory.repository_id import RepositoryIdentityUnavailable
 from minicode_harness.models import ModelCapabilities, ModelResponse
 from minicode_harness.output import NullOutputSink
@@ -146,6 +146,34 @@ def test_run_executor_review_uses_review_skill_and_readonly_subagent(
     assert session.no_write is True
     assert session.subagents_enabled is False
     assert session.collaboration_mode == "plan"
+
+
+def test_run_executor_persists_lazy_session_before_first_run(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace-lazy-session"
+    workspace.mkdir()
+    session_store = ReplSessionStore(tmp_path / "session-data")
+    session = session_store.create(workspace, persist=False)
+    run_store = RunStore(sessions_root=session_store.sessions_root)
+
+    monkeypatch.setattr(
+        "minicode_harness.runtime.run_executor.create_model_client",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run must not create a model client")
+        ),
+    )
+
+    result = RunExecutor(
+        run_store=run_store,
+        session_memory=session,
+    ).execute(
+        RunExecutionRequest(task="noop", workspace=workspace, dry_run=True),
+        output_sink=NullOutputSink(),
+        approval_client=StaticApprovalClient(),
+    )
+
+    assert session_store.load(workspace, session.session_id).session_id == session.session_id
+    assert result.conversation_session_id == session.session_id
+    assert result.run_path.parent.parent.name == session.session_id
 
 
 def test_run_executor_creates_dry_run_without_model_call(tmp_path, monkeypatch) -> None:

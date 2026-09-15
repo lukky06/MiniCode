@@ -231,6 +231,36 @@ def test_checkpoint_externalizes_canonical_history(tmp_path) -> None:
     assert store.load_history(loaded) == history
 
 
+def test_checkpoint_history_is_append_only_jsonl(tmp_path) -> None:
+    store = CheckpointStore(tmp_path / "run" / "checkpoints")
+    checkpoint = RunCheckpoint(
+        run_id="run_20260711_001",
+        step=1,
+        task="append history",
+        workspace=str(tmp_path),
+    )
+    first = {"role": "user", "content": "first"}
+    second = {"role": "assistant", "content": "second"}
+
+    store.save(checkpoint, message_history=[first])
+
+    assert store.history_path.name == "history.jsonl"
+    assert [json.loads(line) for line in store.history_path.read_text(encoding="utf-8").splitlines()] == [first]
+
+    with store.history_path.open("a", encoding="utf-8") as stream:
+        stream.write('{"role":"assistant","content":"partial')
+
+    store.save(
+        checkpoint.model_copy(update={"step": 2}),
+        message_history=[first, second],
+    )
+    loaded = store.load_latest()
+
+    assert loaded is not None
+    assert store.load_history(loaded) == [first, second]
+    assert [json.loads(line) for line in store.history_path.read_text(encoding="utf-8").splitlines()] == [first, second]
+
+
 def test_checkpoint_history_uses_checkpoint_prefix_after_newer_history_write(tmp_path) -> None:
     store = CheckpointStore(tmp_path / "run" / "checkpoints")
     checkpoint = RunCheckpoint(
@@ -254,7 +284,7 @@ def test_checkpoint_history_uses_checkpoint_prefix_after_newer_history_write(tmp
     assert store.load_history(loaded) == original
 
     store.history_path.write_text(
-        json.dumps([{"role": "user", "content": "mutated"}], ensure_ascii=False),
+        json.dumps({"role": "user", "content": "mutated"}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="history hash mismatch"):

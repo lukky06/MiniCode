@@ -21,7 +21,7 @@ from .tasks import TaskListState
 
 
 LATEST_CHECKPOINT_FILE = "latest.json"
-CANONICAL_HISTORY_FILE = "history.json"
+CANONICAL_HISTORY_FILE = "history.jsonl"
 EMPTY_HISTORY_SHA256 = hashlib.sha256(b"[]").hexdigest()
 
 
@@ -84,7 +84,7 @@ class CheckpointStore:
     ) -> Path:
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         if message_history is not None:
-            self._save_history(message_history)
+            self._save_history(checkpoint, message_history)
             checkpoint = checkpoint.model_copy(
                 update={
                     "history_length": len(message_history),
@@ -107,30 +107,101 @@ class CheckpointStore:
             if checkpoint.history_sha256 != EMPTY_HISTORY_SHA256:
                 raise ValueError("Checkpoint history hash mismatch.")
             return []
-        if not self.history_path.is_file():
-            raise ValueError("Checkpoint canonical history is missing.")
-        try:
-            payload = json.loads(self.history_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("Checkpoint canonical history is invalid.") from exc
-        if not isinstance(payload, list) or len(payload) < checkpoint.history_length:
+        lines = self._history_lines()
+        if len(lines) < checkpoint.history_length:
             raise ValueError("Checkpoint canonical history is incomplete.")
-        prefix = payload[: checkpoint.history_length]
+        prefix = _decode_history_lines(lines[: checkpoint.history_length])
         if _history_sha256(prefix) != checkpoint.history_sha256:
             raise ValueError("Checkpoint history hash mismatch.")
         return prefix
 
-    def _save_history(self, message_history: list[dict[str, Any]]) -> None:
+    def _save_history(
+        self,
+        checkpoint: RunCheckpoint,
+        message_history: list[dict[str, Any]],
+    ) -> None:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            message_history,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ) + "\n"
-        temporary = self.history_path.with_suffix(".json.tmp")
+        previous = self.load_latest()
+        accepted_length = previous.history_length if previous is not None else 0
+        accepted_hash = (
+            previous.history_sha256 if previous is not None else EMPTY_HISTORY_SHA256
+        )
+        lines = self._history_lines(allow_missing=True)
+        if len(lines) < accepted_length:
+            raise ValueError("Checkpoint canonical history is incomplete.")
+        accepted = _decode_history_lines(lines[:accepted_length])
+        if _history_sha256(accepted) != accepted_hash:
+            raise ValueError("Checkpoint history hash mismatch.")
+        history_diverged = (
+            accepted_length > len(message_history)
+            or _history_sha256(message_history[:accepted_length]) != accepted_hash
+        )
+        if history_diverged:
+            if previous is not None and (
+                checkpoint.run_id != previous.run_id or checkpoint.step <= previous.step
+            ):
+                self._rewrite_history(message_history)
+                return
+            if accepted_length > len(message_history):
+                raise ValueError("New checkpoint history is shorter than the accepted prefix.")
+            raise ValueError("New checkpoint history diverges from the accepted prefix.")
+
+        if len(lines) != accepted_length:
+            self._rewrite_history(accepted)
+        elif not self.history_path.exists():
+            self.history_path.touch()
+
+        tail = message_history[accepted_length:]
+        if tail:
+            with self.history_path.open("a", encoding="utf-8", newline="\n") as stream:
+                for message in tail:
+                    stream.write(
+                        json.dumps(
+                            message,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            default=str,
+                        )
+                    )
+                    stream.write("\n")
+
+    def _history_lines(self, *, allow_missing: bool = False) -> list[str]:
+        if not self.history_path.is_file():
+            if allow_missing:
+                return []
+            raise ValueError("Checkpoint canonical history is missing.")
+        try:
+            return self.history_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise ValueError("Checkpoint canonical history is invalid.") from exc
+
+    def _rewrite_history(self, messages: list[dict[str, Any]]) -> None:
+        payload = "".join(
+            json.dumps(
+                message,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            + "\n"
+            for message in messages
+        )
+        temporary = self.history_path.with_suffix(".jsonl.tmp")
         temporary.write_text(payload, encoding="utf-8")
         temporary.replace(self.history_path)
+
+
+def _decode_history_lines(lines: list[str]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Checkpoint canonical history is invalid.") from exc
+        if not isinstance(message, dict):
+            raise ValueError("Checkpoint canonical history is invalid.")
+        messages.append(message)
+    return messages
 
 
 def _history_sha256(message_history: list[dict[str, Any]]) -> str:

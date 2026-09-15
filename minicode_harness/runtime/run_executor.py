@@ -206,6 +206,10 @@ class RunExecutor:
             focus=" ".join(focus.split())[:500],
         )
 
+    def _ensure_conversation_session_persisted(self) -> None:
+        if self.session_memory is not None:
+            self.session_memory.ensure_persisted()
+
     def review_current_diff(
         self,
         *,
@@ -218,6 +222,7 @@ class RunExecutor:
         """Review the current Git diff with the built-in review Skill and read-only subagent."""
 
         resolved_workspace = Path(workspace).expanduser().resolve()
+        self._ensure_conversation_session_persisted()
         diff = inspect_git_diff(resolved_workspace)
         if diff.returncode != 0:
             raise RuntimeError(diff.stderr.strip() or "git diff failed.")
@@ -323,6 +328,7 @@ class RunExecutor:
         """Execute one run and return facts for the caller to render."""
 
         workspace = request.workspace.expanduser().resolve()
+        self._ensure_conversation_session_persisted()
         skills_csv = ",".join(request.skills) if request.skills else None
         session = self.run_store.create_run(
             task=request.task,

@@ -421,7 +421,7 @@ def _launch_session(
     if session_mode == "new":
         if session_id is not None:
             raise ValueError("A session ID cannot be supplied when starting a new session.")
-        return session_store.create(workspace)
+        return session_store.create(workspace, persist=False)
     if session_mode == "continue":
         if session_id is not None:
             raise ValueError("A session ID cannot be combined with continue mode.")

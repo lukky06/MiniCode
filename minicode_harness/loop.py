@@ -860,7 +860,7 @@ class AgentLoop:
         reason: str,
         status: str = "running",
     ) -> None:
-        self.lifecycle.persist_and_checkpoint(
+        self.lifecycle.checkpoint_progress(
             self._run_snapshot(step),
             status=status,
             reason=reason,
