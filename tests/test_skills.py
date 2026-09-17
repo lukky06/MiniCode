@@ -1,3 +1,5 @@
+import pytest
+
 from minicode_harness.skills import SkillLoader
 from minicode_harness.tools import ToolRegistry
 
@@ -14,12 +16,12 @@ def test_skill_loader_loads_language_neutral_builtin_documents() -> None:
 
     assert available == [
         "code-debug",
-        "unit-test",
-        "repo-explain",
-        "test-generation",
-        "web-controller-test",
         "refactor",
+        "repo-explain",
         "review",
+        "test-generation",
+        "unit-test",
+        "web-controller-test",
     ]
     assert skill.name == "code-debug"
     assert "any supported language or toolchain" in skill.content
@@ -76,7 +78,7 @@ def test_skill_loader_default_root_is_independent_from_current_workspace(tmp_pat
     assert loader.load("test-generation").name == "test-generation"
 
 
-def test_skill_catalog_uses_bounded_when_to_use_summaries() -> None:
+def test_skill_catalog_uses_frontmatter_summaries() -> None:
     summaries = SkillLoader().list_summaries(["code-debug", "unit-test"])
 
     assert [summary.name for summary in summaries] == ["code-debug", "unit-test"]
@@ -84,6 +86,115 @@ def test_skill_catalog_uses_bounded_when_to_use_summaries() -> None:
     assert "any supported language" in summaries[0].description
     assert "## Evidence checklist" not in summaries[0].description
     assert "## Verification convention" not in summaries[0].description
+
+
+def test_skill_loader_discovers_valid_frontmatter_without_registered_names(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: custom-check\n"
+        "description: Use when a custom repository check is requested.\n"
+        "---\n\n"
+        "# Custom Check\n\n"
+        "Detailed instructions.\n",
+        encoding="utf-8",
+    )
+
+    loader = SkillLoader(root)
+
+    assert loader.list_available() == ["custom-check"]
+    summary = loader.describe("custom-check")
+    assert summary.description == "Use when a custom repository check is requested."
+
+
+def test_skill_loader_rejects_missing_or_mismatched_frontmatter(tmp_path) -> None:
+    root = tmp_path / "skills"
+    missing = root / "missing"
+    missing.mkdir(parents=True)
+    (missing / "SKILL.md").write_text("# Missing metadata\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="frontmatter"):
+        SkillLoader(root).list_available()
+
+    (missing / "SKILL.md").write_text(
+        "---\nname: other\ndescription: Use when testing metadata validation.\n---\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="directory"):
+        SkillLoader(root).list_available()
+
+
+def test_skill_loader_reads_one_supporting_resource_on_demand(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    references = skill_dir / "references"
+    references.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: custom-check\ndescription: Use when a custom check is requested.\n---\n\n# Check\n",
+        encoding="utf-8",
+    )
+    (references / "details.md").write_text("# Details\nOnly load me when needed.\n", encoding="utf-8")
+
+    loaded = SkillLoader(root).read("custom-check/references/details.md")
+
+    assert loaded.name == "custom-check"
+    assert loaded.content == "# Details\nOnly load me when needed.\n"
+    assert loaded.path.endswith("custom-check\\references\\details.md") or loaded.path.endswith(
+        "custom-check/references/details.md"
+    )
+
+
+def test_skill_loader_rejects_supporting_resource_path_escape(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: custom-check\ndescription: Use when a custom check is requested.\n---\n",
+        encoding="utf-8",
+    )
+    (root / "outside.md").write_text("outside\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="relative path"):
+        SkillLoader(root).read("custom-check/../outside.md")
+    with pytest.raises(ValueError, match="relative path"):
+        SkillLoader(root).read("custom-check/./SKILL.md")
+
+
+def test_skill_loader_rejects_supporting_resource_symlink_escape(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    references = skill_dir / "references"
+    references.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: custom-check\ndescription: Use when a custom check is requested.\n---\n",
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    link = references / "outside.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this host")
+
+    with pytest.raises(ValueError, match="outside its skill directory"):
+        SkillLoader(root).read("custom-check/references/outside.md")
+
+
+def test_skill_loader_rejects_binary_supporting_resource(tmp_path) -> None:
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: custom-check\ndescription: Use when a custom check is requested.\n---\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "asset.bin").write_bytes(b"abc\x00def")
+
+    with pytest.raises(ValueError, match="text resource"):
+        SkillLoader(root).read("custom-check/asset.bin")
 
 
 def test_skill_loader_resolves_explicit_names_without_intent_selection() -> None:
@@ -145,6 +256,42 @@ def test_tool_registry_loads_full_skill_only_on_model_request(tmp_path) -> None:
     )
     assert loaded.name == "repo-explain"
     assert "# Skill: Repo Explain" in loaded.content
+
+
+def test_tool_registry_reads_supporting_resource_only_for_available_skill(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    root = tmp_path / "skills"
+    skill_dir = root / "custom-check"
+    references = skill_dir / "references"
+    references.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: custom-check\ndescription: Use when a custom check is requested.\n---\n",
+        encoding="utf-8",
+    )
+    (references / "details.md").write_text("resource detail\n", encoding="utf-8")
+    registry = ToolRegistry(
+        str(workspace),
+        skill_loader=SkillLoader(root),
+        skill_names=["custom-check"],
+    )
+
+    loaded = registry.execute_admitted(
+        registry.admit(
+            "read",
+            {"source": "skill", "target": "custom-check/references/details.md"},
+        )
+    )
+    assert loaded.name == "custom-check"
+    assert loaded.content == "resource detail\n"
+
+    with pytest.raises(FileNotFoundError, match="not available"):
+        registry.execute_admitted(
+            registry.admit(
+                "read",
+                {"source": "skill", "target": "other/references/details.md"},
+            )
+        )
 
 
 def test_tool_registry_omits_load_skill_when_skills_are_disabled(tmp_path) -> None:

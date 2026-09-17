@@ -1,3 +1,9 @@
+---
+name: repo-explain
+description: >
+  Use this skill to explain project structure, architecture, module responsibilities, or code flow. For a whole-repository explanation, load this Skill before broad exploration. If the implementation location is unknown, search shallowly before reading direct source, and separate implementation evidence from document or name-based inference.
+---
+
 # Skill: Repo Explain
 
 ## When to use

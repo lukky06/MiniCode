@@ -1,3 +1,8 @@
+---
+name: code-debug
+description: Use this skill for failing tests, compiler or interpreter errors, runtime exceptions, incorrect behavior, build failures, and regression diagnosis in any supported language or toolchain.
+---
+
 # Skill: Code Debug
 
 ## When to use

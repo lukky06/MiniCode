@@ -1,3 +1,8 @@
+---
+name: refactor
+description: Use this skill when the task asks for refactoring, simplification, restructuring, or cleanup while preserving behavior.
+---
+
 # Skill: Refactor
 
 ## When to use

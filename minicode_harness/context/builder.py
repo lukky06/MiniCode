@@ -159,7 +159,7 @@ def _compact_skills(skills: list[ContextSkill]) -> list[ContextSkill]:
             source=skill.source,
             description=_clip(skill.description, 400),
         )
-        for skill in skills[:3]
+        for skill in skills
     ]
 
 

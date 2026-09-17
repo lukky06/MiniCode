@@ -433,10 +433,9 @@ class ToolRegistry:
                 name="read",
                 description=(
                     "Read one explicitly typed resource. Workspace and Artifact targets must identify a file; "
-                    "optional line ranges select an inclusive local range. Memory and Skill targets use exact "
-                    "registered names, while source=diff returns the current Git diff without a target. Large "
-                    "results may be externalized to an Artifact. For Memory, read at most two exact indexed Topics "
-                    "per user turn."
+                    "optional line ranges select an inclusive local range. Memory uses exact names. Skill uses "
+                    "<skill> or <skill>/<path>. source=diff returns the current Git diff without a target. "
+                    "For Memory, read at most two exact indexed Topics per user turn."
                 ),
                 args_model=ReadArgs,
                 handler=self._execute_read,
@@ -774,13 +773,14 @@ class ToolRegistry:
                 destructive=spec.annotations.destructive,
             )
 
-    def _load_skill(self, name: str) -> Skill:
-        if self.skill_loader is None or name not in self.skill_names:
+    def _load_skill(self, target: str) -> Skill:
+        skill_name = target.strip().replace("\\", "/").split("/", 1)[0]
+        if self.skill_loader is None or skill_name not in self.skill_names:
             available = ", ".join(self.skill_names) if self.skill_names else "none"
             raise FileNotFoundError(
-                f"Skill is not available in this run: {name}. Available skills: {available}."
+                f"Skill is not available in this run: {skill_name}. Available skills: {available}."
             )
-        return self.skill_loader.load(name)
+        return self.skill_loader.read(target)
 
     def schemas(self, tool_names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         """Return tool schemas for model function calling."""

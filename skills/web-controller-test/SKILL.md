@@ -1,3 +1,8 @@
+---
+name: web-controller-test
+description: Use this skill when the task asks to test an HTTP route, controller, request handler, resolver, middleware boundary, or API endpoint in any web framework.
+---
+
 # Skill: Web Controller Test Generation
 
 ## When to use

@@ -1,3 +1,8 @@
+---
+name: review
+description: Use this skill to review an existing Git diff for correctness, regressions, unsafe behavior, stale assumptions, missing validation, and focused test gaps before the change is accepted.
+---
+
 # Skill: Code Review
 
 ## When to use

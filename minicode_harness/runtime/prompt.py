@@ -80,7 +80,9 @@ def build_stable_system_prefix(
             for skill in skills
         ]
         sections.append(
-            "可用技能目录（按需调用 `read(source=skill, target=<name>)` 读取全文）：\n"
+            "可用技能目录（需要时先调用 `read(source=skill, target=<name>)` 读取完整 SKILL.md；"
+            "若正文引用 supporting resource，再用 `read(source=skill, target=<name>/<relative-path>)` "
+            "按需读取具体资源，避免批量加载）：\n"
             + "\n".join(rendered)
         )
 

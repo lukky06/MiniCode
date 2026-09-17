@@ -1,3 +1,8 @@
+---
+name: unit-test
+description: Use this skill when creating, repairing, or reviewing focused automated tests for a function, class, module, component, or small behavior boundary.
+---
+
 # Skill: Unit Test
 
 ## When to use

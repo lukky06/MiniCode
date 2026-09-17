@@ -86,6 +86,7 @@ def test_context_builder_renders_system_only_without_redundant_runtime_fields(tm
     assert "Repository Structure Card" not in rendered
     assert "pyproject.toml" in rendered
     assert "可用工具：" not in rendered
+    assert "按需读取具体资源" in rendered
     assert "运行模式：" not in rendered
     assert "当前时间：" not in rendered
     assert "最终答案协议" not in rendered
@@ -240,6 +241,24 @@ def test_token_budget_orders_soft_semantic_and_emergency_hard_limits() -> None:
     )
     assert constrained.soft_token_limit < constrained.semantic_token_limit
     assert constrained.semantic_token_limit < constrained.hard_token_limit
+
+
+def test_context_builder_keeps_all_skill_catalog_entries_during_soft_compaction(tmp_path) -> None:
+    skills = [
+        ContextSkill(name=f"skill-{index}", description=f"Use when task {index} applies.", source="test")
+        for index in range(5)
+    ]
+    budget = TokenBudget(context_budget=4_000, reserved_output=0, soft_limit=0.1, hard_limit=0.95)
+
+    context = ContextBuilder(budget=budget).build(
+        available_skills=skills,
+        workspace=tmp_path,
+    )
+
+    rendered = _rendered(context)
+    assert context.compression_events
+    for skill in skills:
+        assert f"`{skill.name}`" in rendered
 
 
 def test_context_builder_packs_large_optional_system_context(tmp_path) -> None:

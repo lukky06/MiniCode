@@ -1,3 +1,8 @@
+---
+name: test-generation
+description: Use this skill when the task asks to add new automated tests, expand branch coverage, reproduce a defect, or create a regression test in any language or framework.
+---
+
 # Skill: Test Generation
 
 ## When to use

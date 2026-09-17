@@ -3,33 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel
+import yaml
+from pydantic import BaseModel, Field, ValidationError
 
 
-BUILT_IN_SKILL_NAMES = (
-    "code-debug",
-    "unit-test",
-    "repo-explain",
-    "test-generation",
-    "web-controller-test",
-    "refactor",
-    "review",
-)
 DEFAULT_SKILL_ROOT = Path(__file__).resolve().parents[2] / "skills"
 
 
 class SkillSummary(BaseModel):
     """Compact catalog entry exposed before a skill is loaded."""
 
-    name: str
-    description: str
+    name: str = Field(pattern=r"^[a-z0-9-]+$")
+    description: str = Field(min_length=1, max_length=1024)
     path: str
 
 
 class Skill(BaseModel):
-    """A fully loaded skill document."""
+    """One loaded UTF-8 skill text resource."""
 
     name: str
     content: str
@@ -43,15 +35,9 @@ class SkillLoader:
         self.root = Path(root) if root is not None else DEFAULT_SKILL_ROOT
 
     def list_available(self) -> list[str]:
-        """Return available skill names."""
+        """Return discovered skill names in stable order."""
 
-        if not self.root.exists():
-            return []
-        return [
-            name
-            for name in BUILT_IN_SKILL_NAMES
-            if (self.root / name / "SKILL.md").is_file()
-        ]
+        return [summary.name for summary in self._discover_summaries()]
 
     def resolve_names(self, names: Iterable[str] | None = None) -> list[str]:
         """Return available names, optionally restricted by an explicit list."""
@@ -70,60 +56,126 @@ class SkillLoader:
         return resolved
 
     def list_summaries(self, names: Iterable[str] | None = None) -> list[SkillSummary]:
-        """Return compact catalog entries without loading full skill documents."""
+        """Return frontmatter catalog entries without loading skill bodies."""
 
-        return [self.describe(name) for name in self.resolve_names(names)]
+        summaries = self._discover_summaries()
+        if names is None:
+            return summaries
+        by_name = {summary.name: summary for summary in summaries}
+        return [by_name[name] for name in self.resolve_names(names) if name in by_name]
 
     def describe(self, name: str) -> SkillSummary:
-        """Read only the short ``When to use`` paragraph for one skill."""
+        """Read and validate one skill's frontmatter metadata."""
 
         path = self._skill_path(name)
         if not path.is_file():
             raise FileNotFoundError(f"Skill not found: {name}")
-        return SkillSummary(
-            name=name,
-            description=_read_when_to_use(path),
-            path=str(path),
-        )
+        return _read_skill_summary(path)
 
     def load(self, name: str) -> Skill:
         """Load one complete skill document by exact name."""
 
-        path = self._skill_path(name)
-        if not path.is_file():
-            raise FileNotFoundError(f"Skill not found: {name}")
-        return Skill(
-            name=name,
-            content=path.read_text(encoding="utf-8"),
-            path=str(path),
-        )
+        return self.read(name)
+
+    def read(self, target: str) -> Skill:
+        """Read one UTF-8 skill entry point or supporting resource."""
+
+        normalized = target.strip().replace("\\", "/")
+        raw_parts = normalized.split("/")
+        resource = PurePosixPath(normalized)
+        if (
+            not normalized
+            or resource.is_absolute()
+            or any(part in {"", ".", ".."} for part in raw_parts)
+        ):
+            raise ValueError("Skill target must be a relative path without '.' or '..' segments.")
+
+        parts = tuple(raw_parts)
+        skill_name = parts[0]
+        entry_path = self._skill_path(skill_name)
+        if not entry_path.is_file():
+            raise FileNotFoundError(f"Skill not found: {skill_name}")
+        summary = _read_skill_summary(entry_path)
+
+        if len(parts) == 1:
+            path = entry_path
+        else:
+            skill_root = self._skill_root(skill_name)
+            path = skill_root.joinpath(*parts[1:]).resolve()
+            try:
+                path.relative_to(skill_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Skill resource resolves outside its skill directory: {target}"
+                ) from exc
+            if not path.is_file():
+                raise FileNotFoundError(f"Skill resource not found: {target}")
+
+        payload = path.read_bytes()
+        if b"\x00" in payload:
+            raise ValueError(f"Skill resource must be a UTF-8 text resource: {target}")
+        try:
+            content = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Skill resource must be a UTF-8 text resource: {target}") from exc
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        return Skill(name=summary.name, content=content, path=str(path))
+
+    def _discover_summaries(self) -> list[SkillSummary]:
+        if not self.root.exists():
+            return []
+        paths = sorted(self.root.glob("*/SKILL.md"), key=lambda path: path.parent.name)
+        return [self.describe(path.parent.name) for path in paths]
+
+    def _skill_root(self, name: str) -> Path:
+        root = self.root.resolve()
+        skill_root = (root / name).resolve()
+        try:
+            skill_root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Skill path resolves outside the skill root: {name}") from exc
+        return skill_root
 
     def _skill_path(self, name: str) -> Path:
-        return self.root / name / "SKILL.md"
+        skill_root = self._skill_root(name)
+        path = (skill_root / "SKILL.md").resolve()
+        try:
+            path.relative_to(skill_root)
+        except ValueError as exc:
+            raise ValueError(f"Skill entry point resolves outside its skill directory: {name}") from exc
+        return path
 
 
-def _read_when_to_use(path: Path) -> str:
-    """Extract one bounded catalog description without reading the full file."""
+def _read_skill_summary(path: Path) -> SkillSummary:
+    """Read only YAML frontmatter and validate the skill catalog contract."""
 
-    fallback: list[str] = []
-    description: list[str] = []
-    in_when_to_use = False
     with path.open("r", encoding="utf-8") as handle:
+        if handle.readline().strip() != "---":
+            raise ValueError(f"Skill frontmatter is required: {path}")
+        metadata_lines: list[str] = []
         for raw_line in handle:
-            line = raw_line.strip()
-            if line == "## When to use":
-                in_when_to_use = True
-                continue
-            if in_when_to_use:
-                if line.startswith("## "):
-                    break
-                if not line:
-                    if description:
-                        break
-                    continue
-                description.append(line)
-                continue
-            if line and not line.startswith("#") and len(fallback) < 2:
-                fallback.append(line)
-    text = " ".join(description or fallback).strip()
-    return text or f"Load the {path.parent.name} skill for its full instructions."
+            if raw_line.strip() == "---":
+                break
+            metadata_lines.append(raw_line)
+        else:
+            raise ValueError(f"Skill frontmatter is not closed: {path}")
+
+    try:
+        metadata = yaml.safe_load("".join(metadata_lines)) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid Skill frontmatter in {path}: {exc}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Invalid Skill frontmatter in {path}: expected a mapping")
+
+    name = str(metadata.get("name", "")).strip()
+    description = str(metadata.get("description", "")).strip()
+    if not name or not description:
+        raise ValueError(f"Skill frontmatter must define name and description: {path}")
+    if name != path.parent.name:
+        raise ValueError(
+            f"Skill frontmatter name must match directory name: {name!r} != {path.parent.name!r}"
+        )
+    try:
+        return SkillSummary(name=name, description=description, path=str(path))
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Skill frontmatter in {path}: {exc}") from exc
