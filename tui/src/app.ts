@@ -1,4 +1,5 @@
 import {
+  Box,
   CombinedAutocompleteProvider,
   ProcessTerminal,
   Key,
@@ -7,8 +8,11 @@ import {
   TuiAltScreen,
   VStack,
   matchesKey,
+  type Component,
   type OverlayHandle,
   type Terminal,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 
 import { Composer } from "./components/composer.js";
@@ -324,9 +328,23 @@ export class MiniCodeTuiApp {
             }
           : undefined,
       }));
-    this.editor.setAutocompleteProvider(
-      new CombinedAutocompleteProvider(commands, this.workspace),
-    );
+    const baseProvider = new CombinedAutocompleteProvider(commands, this.workspace);
+    this.editor.setAutocompleteProvider({
+      getSuggestions: (lines, cursorLine, cursorCol, options) => {
+        const currentLine = lines[cursorLine] ?? "";
+        const textBeforeCursor = currentLine.slice(0, cursorCol).trimStart();
+        return baseProvider.getSuggestions(lines, cursorLine, cursorCol, {
+          ...options,
+          force: options.force && !this.running && textBeforeCursor.startsWith("/")
+            ? false
+            : options.force,
+        });
+      },
+      applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
+        baseProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix),
+      shouldTriggerFileCompletion: (lines, cursorLine, cursorCol) =>
+        baseProvider.shouldTriggerFileCompletion(lines, cursorLine, cursorCol),
+    });
   }
 
   private startCommandTicker(toolCallId: string): void {
@@ -381,7 +399,7 @@ export class MiniCodeTuiApp {
       this.clearApproval();
       this.tui.requestRender();
     });
-    this.approvalHandle = this.tui.showOverlay(overlay, {
+    this.approvalHandle = this.tui.showOverlay(new OverlaySurface(overlay), {
       anchor: "bottom-center",
       width: "80%",
       maxHeight: "60%",
@@ -416,7 +434,7 @@ export class MiniCodeTuiApp {
       this.clearUserInput();
       this.tui.requestRender();
     });
-    this.userInputHandle = this.tui.showOverlay(overlay, {
+    this.userInputHandle = this.tui.showOverlay(new OverlaySurface(overlay), {
       anchor: "center",
       width: "80%",
       maxHeight: "80%",
@@ -447,7 +465,7 @@ export class MiniCodeTuiApp {
       overscroll: "contain",
       scrollbar: "auto",
     });
-    this.panelHandle = this.tui.showOverlay(scroll, {
+    this.panelHandle = this.tui.showOverlay(new OverlaySurface(scroll), {
       anchor: "center",
       width: "90%",
       maxHeight: "80%",
@@ -464,6 +482,30 @@ export class MiniCodeTuiApp {
       this.running ? "working" : "muted",
       this.running ? "" : "Ctrl+C exit",
     );
+  }
+}
+
+class OverlaySurface implements Component {
+  private readonly box = new Box(2, 1, ui.surface);
+
+  constructor(private readonly child: Component) {
+    this.box.addChild(child);
+  }
+
+  invalidate(): void {
+    this.box.invalidate();
+  }
+
+  handleInput(data: string): void {
+    this.child.handleInput?.(data);
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    return this.box.handleMouse(event);
+  }
+
+  render(width: number): string[] {
+    return this.box.render(width);
   }
 }
 

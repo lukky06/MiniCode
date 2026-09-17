@@ -598,6 +598,35 @@ test("command catalog powers slash completion and tab completion", async () => {
   app.stop();
 });
 
+test("slash command argument tab completion never falls through to workspace files", async () => {
+  const terminal = new FakeTerminal(90, 24);
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+  app.handleServerEvent({
+    type: "command_catalog",
+    commands: [
+      {
+        name: "permissions",
+        description: "View or change runtime permissions",
+        argument_hint: "[mode <value>]",
+        argument_choices: ["mode read-only", "mode workspace-write"],
+        availability: "idle",
+      },
+    ],
+  });
+
+  terminal.sendInput("/permissions mode read-only ");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(app.editor.isShowingAutocomplete(), false);
+
+  terminal.sendInput("\t");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(app.editor.getText(), "/permissions mode read-only ");
+  assert.equal(app.editor.isShowingAutocomplete(), false);
+  app.stop();
+});
+
 test("idle-only slash completion is hidden while a run is active", async () => {
   const terminal = new FakeTerminal(90, 24);
   const app = new MiniCodeTuiApp({ terminal });
@@ -670,7 +699,37 @@ test("panel event opens one read-only overlay and escape closes it", () => {
   });
 
   assert.equal(app.tui.hasOverlay(), true);
+  app.tui.renderNow(true);
+  assert.match(terminal.writes.at(-1) ?? "", /\x1b\[48;2;\d+;\d+;\d+m/);
   terminal.sendInput("\x1b");
   assert.equal(app.tui.hasOverlay(), false);
+  app.stop();
+});
+
+test("interactive overlays use the same distinct modal surface", () => {
+  const terminal = new FakeTerminal();
+  const app = new MiniCodeTuiApp({ terminal });
+  app.start();
+  app.handleServerEvent({ type: "run_started", run_id: "run_surface" });
+  app.handleServerEvent({
+    type: "approval_required",
+    id: "approval_surface",
+    tool_call_id: "edit_surface",
+    tool: "edit",
+    summary: "Change src/app.ts",
+  });
+
+  app.tui.renderNow(true);
+  assert.match(terminal.writes.at(-1) ?? "", /\x1b\[48;2;\d+;\d+;\d+m/);
+  terminal.sendInput("n");
+
+  app.handleServerEvent({
+    type: "user_input_required",
+    id: "input_surface",
+    question: "Choose mode",
+    options: [{ label: "Default" }, { label: "Plan" }],
+  });
+  app.tui.renderNow(true);
+  assert.match(terminal.writes.at(-1) ?? "", /\x1b\[48;2;\d+;\d+;\d+m/);
   app.stop();
 });

@@ -5281,6 +5281,120 @@ var TuiBase = class _TuiBase extends Container {
   }
 };
 
+// node_modules/@earendil-works/pi-tui/dist/components/box.js
+var Box = class {
+  children = [];
+  paddingX;
+  paddingY;
+  bgFn;
+  // Cache for rendered output
+  cache;
+  mouseLayout;
+  constructor(paddingX = 1, paddingY = 1, bgFn) {
+    this.paddingX = paddingX;
+    this.paddingY = paddingY;
+    this.bgFn = bgFn;
+  }
+  addChild(component) {
+    this.children.push(component);
+    this.invalidateCache();
+  }
+  removeChild(component) {
+    const index = this.children.indexOf(component);
+    if (index !== -1) {
+      this.children.splice(index, 1);
+      this.invalidateCache();
+    }
+  }
+  clear() {
+    this.children = [];
+    this.invalidateCache();
+  }
+  setBgFn(bgFn) {
+    this.bgFn = bgFn;
+  }
+  invalidateCache() {
+    this.cache = void 0;
+  }
+  matchCache(width, childLines, bgSample) {
+    const cache = this.cache;
+    return !!cache && cache.width === width && cache.bgSample === bgSample && cache.childLines.length === childLines.length && cache.childLines.every((line, i) => line === childLines[i]);
+  }
+  invalidate() {
+    this.invalidateCache();
+    for (const child of this.children) {
+      child.invalidate?.();
+    }
+  }
+  handleMouse(event) {
+    const contentWidth = Math.max(1, event.width - this.paddingX * 2);
+    const contentY = event.y - this.paddingY;
+    const contentX = event.x - this.paddingX;
+    if (contentY < 0 || contentX < 0 || contentX >= contentWidth)
+      return void 0;
+    const mouseChildren = this.mouseLayout?.width === contentWidth ? this.mouseLayout.children : this.children.map((component) => ({ component, height: component.render(contentWidth).length }));
+    let childY = 0;
+    for (const { component: child, height: childHeight } of mouseChildren) {
+      if (contentY >= childY && contentY < childY + childHeight) {
+        return dispatchMouseEvent(child, {
+          ...event,
+          x: contentX,
+          y: contentY - childY,
+          width: contentWidth,
+          height: childHeight
+        });
+      }
+      childY += childHeight;
+    }
+    return void 0;
+  }
+  render(width) {
+    if (this.children.length === 0) {
+      return [];
+    }
+    const contentWidth = Math.max(1, width - this.paddingX * 2);
+    const leftPad = " ".repeat(this.paddingX);
+    const childLines = [];
+    const mouseChildren = [];
+    for (const child of this.children) {
+      const lines = child.render(contentWidth);
+      mouseChildren.push({ component: child, height: lines.length });
+      for (const line of lines) {
+        childLines.push(leftPad + line);
+      }
+    }
+    this.mouseLayout = { width: contentWidth, children: mouseChildren };
+    if (childLines.length === 0) {
+      return [];
+    }
+    const bgSample = this.bgFn ? this.bgFn("test") : void 0;
+    if (this.matchCache(width, childLines, bgSample)) {
+      return this.cache.lines;
+    }
+    const result = [];
+    for (let i = 0; i < this.paddingY; i++) {
+      result.push(this.applyBg("", width));
+    }
+    for (const line of childLines) {
+      result.push(this.applyBg(line, width));
+    }
+    for (let i = 0; i < this.paddingY; i++) {
+      result.push(this.applyBg("", width));
+    }
+    this.cache = { childLines, width, bgSample, lines: result };
+    return result;
+  }
+  applyBg(line, width) {
+    const visLen = visibleWidth(line);
+    const padNeeded = Math.max(0, width - visLen);
+    const padded = line + " ".repeat(padNeeded);
+    if (this.bgFn) {
+      return applyBackgroundToLine(padded, width, this.bgFn);
+    }
+    return padded;
+  }
+};
+
 // node_modules/@earendil-works/pi-tui/dist/keybindings.js
 var TUI_KEYBINDINGS = {
   "tui.editor.cursorUp": { defaultKeys: "up", description: "Move cursor up" },
@@ -13028,24 +13142,25 @@ var TuiAltScreen = class extends TuiBase {
 var MAX_RENDER_WRITE_CHARS = 1024 * 1024;
 
 // src/theme.ts
-function sgr(code) {
-  return (text) => text ? `\x1B[${code}m${text}\x1B[0m` : "";
+function sgr(code, resetCode) {
+  return (text) => text ? `\x1B[${code}m${text}\x1B[${resetCode}m` : "";
 }
 var ui = {
-  accent: sgr("38;2;138;173;244"),
-  accentStrong: sgr("1;38;2;138;173;244"),
+  accent: sgr("38;2;138;173;244", "39"),
+  accentStrong: sgr("1;38;2;138;173;244", "22;39"),
   text: (text) => text,
-  muted: sgr("38;2;127;140;152"),
-  dim: sgr("2"),
-  success: sgr("38;2;123;216;143"),
-  warning: sgr("38;2;235;203;139"),
-  error: sgr("38;2;243;139;168"),
-  border: sgr("38;2;95;105;115"),
-  code: sgr("38;2;235;203;139"),
-  bold: sgr("1"),
-  italic: sgr("3"),
-  underline: sgr("4"),
-  strike: sgr("9")
+  muted: sgr("38;2;127;140;152", "39"),
+  dim: sgr("2", "22"),
+  success: sgr("38;2;123;216;143", "39"),
+  warning: sgr("38;2;235;203;139", "39"),
+  error: sgr("38;2;243;139;168", "39"),
+  border: sgr("38;2;95;105;115", "39"),
+  surface: sgr("48;2;24;31;39", "49"),
+  code: sgr("38;2;235;203;139", "39"),
+  bold: sgr("1", "22"),
+  italic: sgr("3", "23"),
+  underline: sgr("4", "24"),
+  strike: sgr("9", "29")
 };
 var selectList = {
   selectedPrefix: ui.accentStrong,
@@ -13973,9 +14088,19 @@ var MiniCodeTuiApp = class {
         }));
       } : void 0
     }));
-    this.editor.setAutocompleteProvider(
-      new CombinedAutocompleteProvider(commands, this.workspace)
-    );
+    const baseProvider = new CombinedAutocompleteProvider(commands, this.workspace);
+    this.editor.setAutocompleteProvider({
+      getSuggestions: (lines, cursorLine, cursorCol, options) => {
+        const currentLine = lines[cursorLine] ?? "";
+        const textBeforeCursor = currentLine.slice(0, cursorCol).trimStart();
+        return baseProvider.getSuggestions(lines, cursorLine, cursorCol, {
+          ...options,
+          force: options.force && !this.running && textBeforeCursor.startsWith("/") ? false : options.force
+        });
+      },
+      applyCompletion: (lines, cursorLine, cursorCol, item, prefix) => baseProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix),
+      shouldTriggerFileCompletion: (lines, cursorLine, cursorCol) => baseProvider.shouldTriggerFileCompletion(lines, cursorLine, cursorCol)
+    });
   }
   startCommandTicker(toolCallId) {
     this.runningCommandIds.add(toolCallId);
@@ -14020,7 +14145,7 @@ var MiniCodeTuiApp = class {
       this.clearApproval();
       this.tui.requestRender();
     });
-    this.approvalHandle = this.tui.showOverlay(overlay, {
+    this.approvalHandle = this.tui.showOverlay(new OverlaySurface(overlay), {
       anchor: "bottom-center",
       width: "80%",
       maxHeight: "60%",
@@ -14051,7 +14176,7 @@ var MiniCodeTuiApp = class {
       this.clearUserInput();
       this.tui.requestRender();
     });
-    this.userInputHandle = this.tui.showOverlay(overlay, {
+    this.userInputHandle = this.tui.showOverlay(new OverlaySurface(overlay), {
       anchor: "center",
       width: "80%",
       maxHeight: "80%",
@@ -14084,7 +14209,7 @@ ${ui.dim("Esc close")}`
       overscroll: "contain",
       scrollbar: "auto"
     });
-    this.panelHandle = this.tui.showOverlay(scroll, {
+    this.panelHandle = this.tui.showOverlay(new OverlaySurface(scroll), {
       anchor: "center",
       width: "90%",
       maxHeight: "80%",
@@ -14100,6 +14225,26 @@ ${ui.dim("Esc close")}`
       this.running ? "working" : "muted",
       this.running ? "" : "Ctrl+C exit"
     );
+  }
+};
+var OverlaySurface = class {
+  constructor(child) {
+    this.child = child;
+    this.box.addChild(child);
+  }
+  child;
+  box = new Box(2, 1, ui.surface);
+  invalidate() {
+    this.box.invalidate();
+  }
+  handleInput(data) {
+    this.child.handleInput?.(data);
+  }
+  handleMouse(event) {
+    return this.box.handleMouse(event);
+  }
+  render(width) {
+    return this.box.render(width);
   }
 };
 function toolAction(tool) {
