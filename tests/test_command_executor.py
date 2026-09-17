@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from minicode_harness.policy import CommandRule, CommandRuleDecision
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.tools import (
     DockerCommandExecutor,
@@ -149,6 +150,31 @@ def test_docker_executor_keeps_windows_docker_binary_with_spaces_as_one_argv0(
     assert captured["kwargs"]["shell"] is False
 
 
+def test_executor_policy_defaults_follow_sandbox_boundary(tmp_path: Path) -> None:
+    docker = DockerCommandExecutor(image="python:3.11-slim")
+    local = LocalCommandExecutor()
+
+    assert docker.classify(["custom-check", "--verify"]).requires_approval is False
+    assert local.classify(["custom-check", "--verify"]).requires_approval is True
+
+
+def test_executor_rules_override_sandbox_default(tmp_path: Path) -> None:
+    ask_rule = CommandRule(
+        decision=CommandRuleDecision.ASK,
+        prefix=("npm", "install"),
+    )
+    allow_rule = CommandRule(
+        decision=CommandRuleDecision.ALLOW,
+        prefix=("custom-check",),
+    )
+
+    docker = DockerCommandExecutor(image="python:3.11-slim", command_rules=[ask_rule])
+    local = LocalCommandExecutor(command_rules=[allow_rule])
+
+    assert docker.classify(["npm", "install", "left-pad"]).requires_approval is True
+    assert local.classify(["custom-check", "--verify"]).requires_approval is False
+
+
 def test_docker_executor_rechecks_policy_and_approval_before_docker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -161,8 +187,11 @@ def test_docker_executor_rechecks_policy_and_approval_before_docker(
 
     with pytest.raises(PermissionError):
         executor.execute(tmp_path, ["bash", "-lc", "whoami"], 10, approval_granted=True)
-    with pytest.raises(PermissionError, match="side-effect free|approval"):
-        executor.execute(tmp_path, ["python", "script.py"], 10)
+    # Sandboxed ordinary commands execute without tool-specific approval rules.
+    process = FakeDockerProcess()
+    monkeypatch.setattr(command_executor_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    result = executor.execute(tmp_path, ["python", "script.py"], 10)
+    assert result.returncode == 0
 
 
 def test_docker_executor_builds_workspace_only_restricted_invocation(
@@ -185,7 +214,7 @@ def test_docker_executor_builds_workspace_only_restricted_invocation(
     arguments = captured["arguments"]
     assert result.stdout == "通过\n"
     assert result.argv == ["python", "-m", "pytest", "-q"]
-    assert result.allowlist_rule == "python -m pytest [focused args]"
+    assert result.allowlist_rule == "sandbox default"
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert arguments[:5] == ["docker", "run", "--rm", "--pull", "never"]
@@ -217,6 +246,32 @@ def test_docker_executor_builds_workspace_only_restricted_invocation(
     ]
     assert not any(value.startswith("--privileged") for value in arguments)
     assert not any(value.startswith("--cap-add") for value in arguments)
+
+
+def test_docker_executor_can_mount_workspace_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    process = FakeDockerProcess()
+
+    def fake_popen(arguments: list[str], **kwargs: Any) -> FakeDockerProcess:
+        captured["arguments"] = arguments
+        return process
+
+    monkeypatch.setattr(command_executor_module.subprocess, "Popen", fake_popen)
+    executor = DockerCommandExecutor(
+        image="python:3.11-slim",
+        workspace_writable=False,
+    )
+
+    result = executor.execute(tmp_path, ["python", "--version"], 10)
+
+    assert result.returncode == 0
+    assert (
+        f"type=bind,source={tmp_path.resolve()},target=/workspace,readonly"
+        in captured["arguments"]
+    )
 
 
 def test_docker_executable_missing_returns_normalized_result(

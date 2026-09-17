@@ -103,6 +103,7 @@ class BoundedProgressPolicy:
             step=step,
             tool_call=tool_call,
             outcome=outcome,
+            run_state=run_state,
             workspace_generation=workspace_generation,
             has_modified_files=bool(modified_files),
         )
@@ -130,6 +131,7 @@ class BoundedProgressPolicy:
         step: int,
         tool_call: NormalizedToolCall,
         outcome: ToolExecutionOutcome,
+        run_state: RunState,
         workspace_generation: int,
         has_modified_files: bool,
     ) -> ProgressGuidance | None:
@@ -143,7 +145,7 @@ class BoundedProgressPolicy:
         if (
             has_modified_files
             and tool_call.name == "run_command"
-            and outcome.observation.metadata.get("command_category") == "verification"
+            and run_state.verification.status == "failed"
             and returncode not in (None, 0)
             and self._failed_verification_nudge_generation != workspace_generation
         ):

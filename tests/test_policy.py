@@ -1,3 +1,4 @@
+from pathlib import Path
 import shlex
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ import pytest
 from minicode_harness.policy import (
     CommandCategory,
     CommandPolicyAction,
+    CommandRule,
+    CommandRuleDecision,
     RiskLevel,
     check_command_allowed,
     classify_argv,
@@ -38,50 +41,100 @@ def _argv(command: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("command", "rule"),
+    "command",
     [
-        ("python -m pytest", "python -m pytest [focused args]"),
-        ("python -m pytest -q tests/test_api.py", "python -m pytest [focused args]"),
-        (
-            "python -c \"from sympy import Symbol; print(Symbol.mro())\"",
-            "python -c read-only diagnostic",
-        ),
-        ("python -m compileall -q src/app.py", "python -m compileall [paths]"),
-        ("python -m ruff check src", "python -m ruff check [paths]"),
-        ("node --check src/app.js", "node --check <file>"),
-        ("npm test", "npm test [focused args]"),
-        ("pnpm test -- src/api.test.ts", "pnpm test [focused args]"),
-        ("npm run lint", "npm run lint [focused args]"),
-        ("go test ./...", "go test [packages]"),
-        ("go vet ./...", "go vet [packages]"),
-        ("cargo test parser", "cargo test [filter]"),
-        ("cargo check --all-targets", "cargo check [filter]"),
-        ("dotnet test app.sln", "dotnet test [project]"),
-        ("dotnet build app.sln", "dotnet build [project]"),
-        ("mvn -q test", "mvn test"),
-        ("mvn -q -Dtest=CouponServiceTest test", "mvn -q -Dtest=<selector> test"),
-        ("mvn -q test -Dtest=CouponServiceTest", "mvn -q -Dtest=<selector> test"),
-        ("mvn -q -DskipTests compile", "mvn -q -DskipTests compile"),
-        ("./gradlew test", "gradle test"),
-        ("./gradlew check", "gradle check"),
-        ("gradle test --tests com.example.ServiceTest", "gradle test --tests <selector>"),
-        ("bundle exec rspec spec/service_spec.rb", "bundle exec rspec [path]"),
-        ("mix test test/service_test.exs", "mix test [path]"),
-        ("swift test", "swift test"),
-        ("make test", "make test"),
-        ("make lint", "make lint"),
-        ("ctest --test-dir build", "ctest --test-dir <path>"),
-        ("cmake --build build", "cmake --build <path>"),
+        "python -m pytest -q tests/test_api.py",
+        "python -m compileall -q src/app.py",
+        "node --check src/app.js",
+        "npm test",
+        "pnpm test -- src/api.test.ts",
+        "npm run lint",
+        "go test ./...",
+        "cargo test parser",
+        "dotnet build app.sln",
+        "mvn -q -DskipTests compile",
+        "./gradlew test",
+        "bundle exec rspec spec/service_spec.rb",
+        "mix test test/service_test.exs",
+        "swift test",
+        "make lint",
+        "ctest --test-dir build",
+        "cmake --build build",
     ],
 )
-def test_command_allowlist_accepts_supported_verification_families(command: str, rule: str) -> None:
-    result = check_command_allowed(_argv(command))
+def test_sandbox_default_accepts_development_commands_without_family_allowlists(command: str) -> None:
+    result = check_command_allowed(_argv(command), sandboxed=True)
 
     assert result.action == CommandPolicyAction.ALLOW
     assert result.allowed is True
     assert result.requires_approval is False
-    assert result.rule == rule
+    assert result.rule == "sandbox default"
     assert result.argv
+
+
+def test_sandboxed_unknown_development_command_runs_without_tool_specific_allowlist() -> None:
+    result = check_command_allowed(["mvn", "package", "-DskipTests"], sandboxed=True)
+
+    assert result.action == CommandPolicyAction.ALLOW
+    assert result.requires_approval is False
+    assert result.rule == "sandbox default"
+
+
+def test_local_unknown_command_defaults_to_approval() -> None:
+    result = check_command_allowed(["custom-check", "--verify"])
+
+    assert result.action == CommandPolicyAction.REQUIRE_APPROVAL
+    assert result.requires_approval is True
+    assert result.rule == "local execution default"
+
+
+def test_declarative_prefix_rules_override_sandbox_default() -> None:
+    ask = CommandRule(decision=CommandRuleDecision.ASK, prefix=("npm", "install"))
+    deny = CommandRule(decision=CommandRuleDecision.DENY, prefix=("git", "push"))
+    allow = CommandRule(decision=CommandRuleDecision.ALLOW, prefix=("custom-check",))
+
+    assert check_command_allowed(["npm", "install", "left-pad"], sandboxed=True, rules=[ask]).action == CommandPolicyAction.REQUIRE_APPROVAL
+    assert check_command_allowed(["git", "push", "origin", "main"], sandboxed=True, rules=[deny]).action == CommandPolicyAction.DENY
+    assert check_command_allowed(["custom-check", "--verify"], rules=[allow]).action == CommandPolicyAction.ALLOW
+
+
+def test_rule_precedence_is_deny_then_ask_then_allow() -> None:
+    rules = [
+        CommandRule(decision=CommandRuleDecision.ALLOW, prefix=("tool",)),
+        CommandRule(decision=CommandRuleDecision.ASK, prefix=("tool", "deploy")),
+        CommandRule(decision=CommandRuleDecision.DENY, prefix=("tool", "deploy", "prod")),
+    ]
+
+    assert check_command_allowed(["tool", "status"], sandboxed=True, rules=rules).action == CommandPolicyAction.ALLOW
+    assert check_command_allowed(["tool", "deploy", "staging"], sandboxed=True, rules=rules).action == CommandPolicyAction.REQUIRE_APPROVAL
+    assert check_command_allowed(["tool", "deploy", "prod"], sandboxed=True, rules=rules).action == CommandPolicyAction.DENY
+
+
+def test_hard_safety_gate_cannot_be_overridden_by_allow_rule() -> None:
+    rule = CommandRule(decision=CommandRuleDecision.ALLOW, prefix=("bash",))
+
+    result = check_command_allowed(["bash", "-lc", "whoami"], sandboxed=True, rules=[rule])
+
+    assert result.action == CommandPolicyAction.DENY
+
+
+def test_sandboxed_commands_do_not_create_session_grants(tmp_path) -> None:
+    assert resolve_command_session_grant(
+        tmp_path,
+        [sys.executable, "script.py"],
+        sandboxed=True,
+    ) is None
+
+    ask_rule = CommandRule(
+        decision=CommandRuleDecision.ASK,
+        prefix=(Path(sys.executable).name, "script.py"),
+    )
+    assert resolve_command_session_grant(
+        tmp_path,
+        [sys.executable, "script.py"],
+        sandboxed=True,
+        rules=[ask_rule],
+    ) is None
 
 
 def test_session_grant_scopes_interpreter_payload_to_exact_argv(tmp_path) -> None:
@@ -99,41 +152,35 @@ def test_session_grant_scopes_interpreter_payload_to_exact_argv(tmp_path) -> Non
     assert first != second
 
 
-def test_read_only_git_history_does_not_create_session_grant(tmp_path) -> None:
+def test_sandboxed_git_inspection_does_not_create_session_grant(tmp_path) -> None:
     if shutil.which("git") is None:
         pytest.skip("git is required for executable identity resolution")
 
-    assert resolve_command_session_grant(tmp_path, ["git", "show", "HEAD"]) is None
-    assert resolve_command_session_grant(tmp_path, ["git", "log", "-1"]) is None
+    assert resolve_command_session_grant(tmp_path, ["git", "show", "HEAD"], sandboxed=True) is None
+    assert resolve_command_session_grant(tmp_path, ["git", "log", "-1"], sandboxed=True) is None
 
 
 @pytest.mark.parametrize(
-    ("command", "category"),
+    "command",
     [
-        ("curl https://example.com", CommandCategory.NETWORK),
-        ("pip install requests", CommandCategory.DEPENDENCY),
-        ("npm install", CommandCategory.DEPENDENCY),
-        ("python script.py", CommandCategory.REPOSITORY_SCRIPT),
-        (
-            "python -c \"open('diagnostic.txt', 'w').write('x')\"",
-            CommandCategory.DIAGNOSTIC,
-        ),
-        ("mvn package", CommandCategory.UNKNOWN),
-        ("git commit -m fix", CommandCategory.GIT_MUTATION),
-        ("git log --output=history.txt -1", CommandCategory.GIT_HISTORY),
-        ("git reflog expire --all", CommandCategory.GIT_MUTATION),
+        "curl https://example.com",
+        "pip install requests",
+        "npm install",
+        "python script.py",
+        "python -c \"open('diagnostic.txt', 'w').write('x')\"",
+        "mvn package",
+        "git commit -m fix",
+        "git log --output=history.txt -1",
+        "git reflog expire --all",
     ],
 )
-def test_command_policy_routes_side_effects_to_approval(
-    command: str,
-    category: CommandCategory,
-) -> None:
+def test_local_commands_default_to_approval_without_tool_specific_categories(command: str) -> None:
     result = check_command_allowed(_argv(command))
 
     assert result.action == CommandPolicyAction.REQUIRE_APPROVAL
     assert result.allowed is True
     assert result.requires_approval is True
-    assert result.category == category
+    assert result.category == CommandCategory.UNKNOWN
     assert result.reason
 
 
@@ -143,9 +190,6 @@ def test_command_policy_routes_side_effects_to_approval(
         "python -m pytest ../outside/test_api.py",
         "dotnet test C:/outside/app.sln",
         "bash -lc whoami",
-        "go test ./... && rm -rf .",
-        "go test ./... & echo done",
-        "cargo test | cat",
         "make test\nrm -rf .",
         "git reset --hard HEAD",
         "git clean -fdx",
@@ -165,14 +209,44 @@ def test_command_policy_denies_dangerous_or_boundary_crossing_commands(command: 
     assert result.reason
 
 
-def test_command_policy_classifies_argv_without_reparsing_display_text() -> None:
-    allowed = classify_argv(["python", "-m", "pytest", "-q", "tests/test_api.py"])
-    denied = classify_argv(["python", "-m", "pytest", "|", "cat"])
+def test_sandbox_policy_denies_sensitive_path_embedded_in_opaque_argument() -> None:
+    result = check_command_allowed(
+        ["python", "-c", "print(open('.env').read())"],
+        sandboxed=True,
+    )
 
-    assert allowed.action == CommandPolicyAction.ALLOW
-    assert allowed.argv == ["python", "-m", "pytest", "-q", "tests/test_api.py"]
-    assert denied.action == CommandPolicyAction.DENY
-    assert "Shell chaining" in str(denied.reason)
+    assert result.action == CommandPolicyAction.DENY
+    assert "sensitive" in (result.reason or "").lower()
+
+
+def test_sandbox_policy_allows_container_absolute_and_parent_paths() -> None:
+    absolute = check_command_allowed(
+        ["python", "/workspace/scripts/check.py"],
+        sandboxed=True,
+    )
+    parent = check_command_allowed(
+        ["python", "../tmp/check.py"],
+        sandboxed=True,
+    )
+
+    assert absolute.action == CommandPolicyAction.ALLOW
+    assert parent.action == CommandPolicyAction.ALLOW
+
+
+def test_command_policy_classifies_argv_without_reparsing_display_text() -> None:
+    ordinary = classify_argv(
+        ["python", "-m", "pytest", "-q", "tests/test_api.py"],
+        sandboxed=True,
+    )
+    literal_operator = classify_argv(
+        ["python", "-m", "pytest", "|", "cat"],
+        sandboxed=True,
+    )
+
+    assert ordinary.action == CommandPolicyAction.ALLOW
+    assert ordinary.argv == ["python", "-m", "pytest", "-q", "tests/test_api.py"]
+    assert literal_operator.action == CommandPolicyAction.ALLOW
+    assert literal_operator.argv[-2:] == ["|", "cat"]
 
 
 def test_run_command_schema_accepts_only_argv_payloads(tmp_path) -> None:
@@ -193,7 +267,7 @@ def test_run_command_schema_accepts_only_argv_payloads(tmp_path) -> None:
     }
     assert "command" not in schema["properties"]
     assert "Commands that normally run without approval" not in function["description"]
-    assert "Policy may allow, require approval, or deny" in function["description"]
+    assert "explicit command rules may allow, ask, or deny" in function["description"]
     assert registry.admit(
         "run_command",
         {"argv": ["python", "-m", "pytest", "-q", "tests/test_api.py"]},
@@ -293,13 +367,13 @@ def test_run_command_requires_explicit_approval_for_side_effect_command(
         ["git", "reflog", "show", "HEAD"],
     ],
 )
-def test_command_policy_allows_read_only_git_inspection_without_approval(command) -> None:
-    result = check_command_allowed(command)
+def test_sandbox_allows_git_inspection_without_git_specific_policy(command) -> None:
+    result = check_command_allowed(command, sandboxed=True)
 
     assert result.action == CommandPolicyAction.ALLOW
     assert result.allowed is True
     assert result.requires_approval is False
-    assert result.category == CommandCategory.INFORMATION
+    assert result.category == CommandCategory.UNKNOWN
 
 
 def test_tool_registry_admits_git_ls_files_without_approval(tmp_path) -> None:
@@ -312,17 +386,22 @@ def test_tool_registry_admits_git_ls_files_without_approval(tmp_path) -> None:
         {"argv": ["git", "ls-files", "src/main/java"]},
     )
 
-    assert admission.risk_level == RiskLevel.LOW
-    assert admission.requires_approval is False
+    assert admission.risk_level == RiskLevel.MEDIUM
+    assert admission.requires_approval is True
     assert admission.command_policy is not None
-    assert admission.command_policy.category == CommandCategory.INFORMATION
+    assert admission.command_policy.category == CommandCategory.UNKNOWN
 
 
 def test_run_command_allows_read_only_git_inspection_without_approval(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    result = run_command(workspace, ["git", "status"], timeout_seconds=10)
+    result = run_command(
+        workspace,
+        ["git", "status"],
+        timeout_seconds=10,
+        approval_granted=True,
+    )
 
     assert result.returncode != 0
     assert "not a git repository" in result.stderr.lower()
@@ -348,7 +427,12 @@ def test_run_command_isolates_child_stdin(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(write_tools_module.subprocess, "Popen", fake_popen)
 
-    result = run_command(tmp_path, ["python", "--version"], timeout_seconds=10)
+    result = run_command(
+        tmp_path,
+        ["python", "--version"],
+        timeout_seconds=10,
+        approval_granted=True,
+    )
 
     assert result.returncode == 0
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL

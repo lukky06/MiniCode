@@ -42,12 +42,14 @@ class RunSession(BaseModel):
     permission_mode: str = "read-only"
     sandbox_mode: str = "local"
     sandbox_image: str | None = None
+    command_rules: list[dict[str, object]] = Field(default_factory=list)
     collaboration_mode: str = "default"
     skills: str | None = None
     no_skills: bool = False
     repository_memory_enabled: bool = True
     mcp_config: str | None = None
     subagents_enabled: bool = True
+    worktree_workers_enabled: bool = True
     status: str = "created"
     current_step: int = 0
     max_steps: int = 50
@@ -129,12 +131,14 @@ class RunStore:
         permission_mode: str = "read-only",
         sandbox_mode: str = "local",
         sandbox_image: str | None = None,
+        command_rules: list[dict[str, object]] | None = None,
         collaboration_mode: str = "default",
         skills: str | None = None,
         no_skills: bool = False,
         repository_memory_enabled: bool = True,
         mcp_config: str | None = None,
         subagents_enabled: bool = True,
+        worktree_workers_enabled: bool = True,
     ) -> RunSession:
         """Create the Run layout and persist ``run.json`` metadata."""
 
@@ -160,12 +164,14 @@ class RunStore:
             permission_mode=permission_mode,
             sandbox_mode=sandbox_mode,
             sandbox_image=sandbox_image,
+            command_rules=list(command_rules or []),
             collaboration_mode=collaboration_mode,
             skills=skills,
             no_skills=no_skills,
             repository_memory_enabled=repository_memory_enabled,
             mcp_config=mcp_config,
             subagents_enabled=subagents_enabled,
+            worktree_workers_enabled=worktree_workers_enabled,
             max_steps=max_steps,
             created_at=now,
             updated_at=now,

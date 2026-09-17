@@ -87,36 +87,15 @@ class ToolBatchExecutor:
                     workspace_generation=loop.workspace_generation,
                 )
             )
-            loop._emit_lifecycle_hook(
-                "post_tool_use",
-                step=step,
-                payload={
-                    "tool_call": tool_call,
-                    "observation": outcome.observation,
-                },
+            guidance = self.commit_outcome(
+                loop,
+                step,
+                tool_call,
+                outcome,
+                emit_finished=parallel_tool_outcomes is None,
             )
-            if parallel_tool_outcomes is None:
-                loop._emit_tool_call_finished(step, outcome.observation)
-            loop.observations.append(outcome.observation)
-            loop._append_tool_result_message(tool_call, outcome.observation)
-            loop._record_modified_files(outcome.modified_files or [])
-            loop._advance_verification_state(tool_call, outcome)
-            guidance = loop.progress_policy.after_tool(
-                step=step,
-                tool_call=tool_call,
-                outcome=outcome,
-                run_state=loop.run_state,
-                workspace_generation=loop.workspace_generation,
-                modified_files=loop.modified_files,
-            )
-            loop._record_run_state(step, tool_call, outcome)
             if guidance is not None:
                 pending_guidance.append(guidance)
-            loop._persist_and_checkpoint(
-                step,
-                reason=outcome.stop_reason or f"tool:{tool_call.name}",
-                status="stopped" if outcome.stop_reason else "running",
-            )
             if outcome.stop_reason:
                 if parallel_tool_outcomes is None:
                     return loop._finish_stopped_run(
@@ -170,6 +149,47 @@ class ToolBatchExecutor:
         if pending_guidance:
             loop._persist_and_checkpoint(step, reason="progress_guidance")
         return None
+
+    def commit_outcome(
+        self,
+        loop: Any,
+        step: int,
+        tool_call: NormalizedToolCall,
+        outcome: ToolExecutionOutcome,
+        *,
+        emit_finished: bool = True,
+    ) -> ProgressGuidance | None:
+        """Commit one completed ToolRuntime outcome into canonical Run state."""
+
+        loop._emit_lifecycle_hook(
+            "post_tool_use",
+            step=step,
+            payload={
+                "tool_call": tool_call,
+                "observation": outcome.observation,
+            },
+        )
+        if emit_finished:
+            loop._emit_tool_call_finished(step, outcome.observation)
+        loop.observations.append(outcome.observation)
+        loop._append_tool_result_message(tool_call, outcome.observation)
+        loop._record_modified_files(outcome.modified_files or [])
+        loop._advance_verification_state(tool_call, outcome)
+        guidance = loop.progress_policy.after_tool(
+            step=step,
+            tool_call=tool_call,
+            outcome=outcome,
+            run_state=loop.run_state,
+            workspace_generation=loop.workspace_generation,
+            modified_files=loop.modified_files,
+        )
+        loop._record_run_state(step, tool_call, outcome)
+        loop._persist_and_checkpoint(
+            step,
+            reason=outcome.stop_reason or f"tool:{tool_call.name}",
+            status="stopped" if outcome.stop_reason else "running",
+        )
+        return guidance
 
     def _execute_parallel(
         self,

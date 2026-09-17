@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -16,11 +17,12 @@ from minicode_harness.context.token import estimate_tokens
 from minicode_harness.loop import AgentLoop, AgentLoopConfig
 from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
 from minicode_harness.memory.repository_id import RepositoryIdentityUnavailable
-from minicode_harness.state import ReplSessionMemory
-from minicode_harness.models import create_model_client
-from minicode_harness.output import OutputSink
+from minicode_harness.state import ReplSessionMemory, RunSession
+from minicode_harness.models import ModelClient, create_model_client
+from minicode_harness.output import OutputSink, emit_semantic_compaction_event
 from minicode_harness.policy import (
     ApprovalPolicy,
+    CommandRule,
     DEFAULT_APPROVAL_POLICY,
     DEFAULT_PERMISSION_MODE,
     PermissionMode,
@@ -32,7 +34,13 @@ from minicode_harness.runtime.collaboration import (
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
 from minicode_harness.runtime.steering import SteeringQueue
-from minicode_harness.state import ApprovalClient, RunStore, UserInputClient
+from minicode_harness.state import (
+    ApprovalClient,
+    ApprovalStore,
+    CheckpointStore,
+    RunStore,
+    UserInputClient,
+)
 from minicode_harness.skills import SkillLoader
 from minicode_harness.subagent import ReadonlySubagentRunner
 from minicode_harness.tools import (
@@ -56,6 +64,7 @@ class RunExecutionRequest(BaseModel):
     permission_mode: PermissionMode = DEFAULT_PERMISSION_MODE
     sandbox_mode: SandboxMode = SandboxMode.LOCAL
     sandbox_image: str | None = None
+    command_rules: list[CommandRule] = Field(default_factory=list)
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
     skills: list[str] | None = None
     skills_enabled: bool = True
@@ -116,6 +125,93 @@ def _emit_optional(output_sink: OutputSink, name: str, *args, **kwargs) -> None:
         handler(*args, **kwargs)
 
 
+def build_agent_loop_from_session(
+    session: RunSession,
+    *,
+    model_client: ModelClient,
+    trace_writer: TraceWriter,
+    repository_memory: RepositoryMemoryStore | None,
+    memory_snapshot_hash: str | None,
+    memory_snapshot_path: str | None,
+    long_term_context: str,
+    command_executor: Any,
+    approval_client: ApprovalClient,
+    session_memory: ReplSessionMemory | None,
+    output_sink: OutputSink | None,
+    stream_model: bool,
+    cancellation_token: CancellationToken | None,
+    steering_queue: SteeringQueue | None,
+    user_input_client: UserInputClient | None = None,
+    data_dir: Path | str | None = None,
+    checkpoint_store: CheckpointStore | None = None,
+    approval_store: ApprovalStore | None = None,
+    start_step: int = 0,
+    initial_observations: list[Any] | None = None,
+    initial_message_history: list[dict[str, Any]] | None = None,
+    initial_compaction_state: Any = None,
+    initial_modified_files: list[str] | None = None,
+    initial_run_state: Any = None,
+    initial_task_state: Any = None,
+    initial_tool_calls: int = 0,
+    subagent_model_client_factory: Callable[[], ModelClient] | None = None,
+) -> AgentLoop:
+    """Build AgentLoop from persisted RunSession semantics."""
+
+    skill_names = (
+        [name.strip() for name in session.skills.split(",") if name.strip()]
+        if session.skills
+        else None
+    )
+    return AgentLoop(
+        task=session.task,
+        workspace=session.workspace,
+        model_client=model_client,
+        trace_writer=trace_writer,
+        config=AgentLoopConfig(
+            max_steps=session.max_steps,
+            start_step=start_step,
+            repository_memory_enabled=session.repository_memory_enabled,
+            enable_subagents=session.subagents_enabled,
+            enable_worktree_workers=(
+                not session.no_write and session.worktree_workers_enabled
+            ),
+        ),
+        skill_names=skill_names,
+        no_skills=session.no_skills,
+        data_dir=data_dir,
+        repository_memory=repository_memory,
+        memory_snapshot_hash=memory_snapshot_hash,
+        memory_snapshot_path=memory_snapshot_path,
+        long_term_context=long_term_context,
+        enable_write=not session.no_write,
+        approval_policy=ApprovalPolicy(session.approval_policy),
+        permission_mode=PermissionMode(session.permission_mode),
+        collaboration_mode=CollaborationMode(session.collaboration_mode),
+        approval_client=approval_client,
+        user_input_client=user_input_client,
+        approval_store=approval_store,
+        checkpoint_store=checkpoint_store,
+        run_id=session.run_id,
+        initial_observations=initial_observations,
+        initial_message_history=initial_message_history,
+        initial_compaction_state=initial_compaction_state,
+        initial_modified_files=initial_modified_files,
+        initial_run_state=initial_run_state,
+        initial_task_state=initial_task_state,
+        initial_tool_calls=initial_tool_calls,
+        provider=session.provider,
+        model=session.model or getattr(model_client, "model", None),
+        session_memory=session_memory,
+        output_sink=output_sink,
+        stream_model=stream_model,
+        cancellation_token=cancellation_token,
+        mcp_config=session.mcp_config,
+        command_executor=command_executor,
+        subagent_model_client_factory=subagent_model_client_factory,
+        steering_queue=steering_queue,
+    )
+
+
 class RunExecutor:
     """Create and execute one Run without owning terminal presentation."""
 
@@ -134,6 +230,7 @@ class RunExecutor:
         provider: str,
         model: str | None = None,
         focus: str = "",
+        output_sink: OutputSink | None = None,
     ) -> SessionCompactionResult:
         """Compact the active canonical session with the normal semantic policy."""
 
@@ -171,7 +268,18 @@ class RunExecutor:
         )
         preparer = ContextPreparer(
             budget,
-            semantic_compactor=LLMSemanticHistoryCompactor(model_client),
+            semantic_compactor=LLMSemanticHistoryCompactor(
+                model_client,
+                event_handler=(
+                    (lambda event_type, payload: emit_semantic_compaction_event(
+                        output_sink,
+                        event_type,
+                        payload,
+                    ))
+                    if output_sink is not None
+                    else None
+                ),
+            ),
         )
         updated_state, event = preparer.manual_compact(
             messages,
@@ -345,12 +453,14 @@ class RunExecutor:
             permission_mode=request.permission_mode.value,
             sandbox_mode=request.sandbox_mode.value,
             sandbox_image=request.sandbox_image,
+            command_rules=[rule.model_dump(mode="json") for rule in request.command_rules],
             collaboration_mode=request.collaboration_mode.value,
             skills=skills_csv,
             no_skills=not request.skills_enabled,
             repository_memory_enabled=request.repository_memory_enabled,
             mcp_config=str(request.mcp_config) if request.mcp_config is not None else None,
             subagents_enabled=request.subagents_enabled,
+            worktree_workers_enabled=request.worktree_workers_enabled,
         )
         run_path = self.run_store.path_for(session.run_id)
         _emit_optional(output_sink, "run_started", session.run_id)
@@ -401,6 +511,8 @@ class RunExecutor:
         command_executor = create_command_executor(
             request.sandbox_mode,
             image=request.sandbox_image,
+            command_rules=request.command_rules,
+            workspace_writable=request.permission_mode != PermissionMode.READ_ONLY,
         )
         repository_memory = None
         request_orchestrator = None
@@ -442,22 +554,10 @@ class RunExecutor:
                 path=MemorySnapshotStore(run_path).checkpoint_path,
             )
 
-        loop = AgentLoop(
-            task=request.task,
-            workspace=workspace,
+        loop = build_agent_loop_from_session(
+            session,
             model_client=model_client,
             trace_writer=trace_writer,
-            config=AgentLoopConfig(
-                repository_memory_enabled=request.repository_memory_enabled,
-                enable_subagents=request.subagents_enabled,
-                enable_worktree_workers=(
-                    request.write_enabled and request.worktree_workers_enabled
-                ),
-            ),
-            skill_names=request.skills,
-            no_skills=not request.skills_enabled,
-            data_dir=(repository_memory.data_dir if repository_memory is not None else None),
-            long_term_context=long_term_context,
             repository_memory=repository_memory,
             memory_snapshot_hash=(memory_snapshot.index_hash if memory_snapshot else None),
             memory_snapshot_path=(
@@ -465,25 +565,20 @@ class RunExecutor:
                 if memory_snapshot is not None
                 else None
             ),
-            enable_write=request.write_enabled,
-            approval_policy=request.approval_policy,
-            permission_mode=request.permission_mode,
-            collaboration_mode=request.collaboration_mode,
+            long_term_context=long_term_context,
+            command_executor=command_executor,
             approval_client=approval_client,
             user_input_client=user_input_client,
-            provider=request.provider,
-            model=request.model or getattr(model_client, "model", None),
             session_memory=self.session_memory,
             output_sink=output_sink,
             stream_model=request.stream_model,
             cancellation_token=cancellation_token,
-            mcp_config=request.mcp_config,
-            command_executor=command_executor,
-            subagent_model_client_factory=lambda: create_model_client(
-                provider=request.provider,
-                model=request.model,
-            ),
             steering_queue=steering_queue,
+            data_dir=(repository_memory.data_dir if repository_memory is not None else None),
+            subagent_model_client_factory=lambda: create_model_client(
+                provider=session.provider,
+                model=session.model,
+            ),
         )
         agent_result = loop.run()
         self.run_store.update_session_state(

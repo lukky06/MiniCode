@@ -20,7 +20,11 @@ from minicode_harness.hooks import HookManager, default_hook_manager
 from minicode_harness.mcp import MCPManager
 from minicode_harness.memory import RepositoryMemoryStore
 from minicode_harness.models import ModelClient
-from minicode_harness.output import NullOutputSink, OutputSink
+from minicode_harness.output import (
+    NullOutputSink,
+    OutputSink,
+    emit_semantic_compaction_event,
+)
 from minicode_harness.policy import ApprovalPolicy, PermissionMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.progress_policy import (
@@ -256,6 +260,11 @@ def build_agent_components(
         semantic_compactor=LLMSemanticHistoryCompactor(
             model_client,
             trace_writer=trace_writer,
+            event_handler=lambda event_type, payload: emit_semantic_compaction_event(
+                resolved_output_sink,
+                event_type,
+                payload,
+            ),
         ),
     )
     resolved_checkpoint_store = checkpoint_store or CheckpointStore(

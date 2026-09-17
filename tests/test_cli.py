@@ -113,6 +113,49 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
     assert captured["sandbox_image"] == "python:3.12"
 
 
+def test_interactive_terminal_allows_unconfigured_default_docker(monkeypatch) -> None:
+    monkeypatch.delenv("MINICODE_SANDBOX_IMAGE", raising=False)
+    monkeypatch.setattr(cli_module, "_load_user_config", lambda: UserConfig())
+    captured = {}
+    monkeypatch.setattr(
+        cli_module,
+        "launch_tui",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    launch = _parse_interactive_task_args([])
+    cli_module._run_terminal(launch)
+
+    assert captured["sandbox_mode"] == "docker"
+    assert captured["sandbox_image"] is None
+
+
+def test_user_config_toml_accepts_declarative_command_rules(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'sandbox = "docker"',
+                '[[command_rules]]',
+                'decision = "ask"',
+                'prefix = ["npm", "install"]',
+                '[[command_rules]]',
+                'decision = "deny"',
+                'prefix = ["git", "push"]',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_user_config(config_path)
+
+    assert [(rule.decision.value, rule.prefix) for rule in config.command_rules] == [
+        ("ask", ("npm", "install")),
+        ("deny", ("git", "push")),
+    ]
+
+
 def test_user_config_precedence_keeps_cli_and_environment_above_file(monkeypatch) -> None:
     config = UserConfig(
         provider="deepseek",

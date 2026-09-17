@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -204,9 +204,11 @@ class LLMSemanticHistoryCompactor:
         model_client: ModelClient,
         *,
         trace_writer: TraceWriter | None = None,
+        event_handler: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.model_client = model_client
         self.trace_writer = trace_writer
+        self.event_handler = event_handler
 
     def compact(
         self,
@@ -300,6 +302,11 @@ class LLMSemanticHistoryCompactor:
     def _trace(self, event_type: str, **payload: Any) -> None:
         if self.trace_writer is not None:
             self.trace_writer.write_event(event_type, **payload)
+        if self.event_handler is not None:
+            try:
+                self.event_handler(event_type, dict(payload))
+            except Exception:
+                pass
 
 
 def _normalize_focus(focus: str | None) -> str:

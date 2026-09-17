@@ -12,6 +12,7 @@ from minicode_harness.tools.semantics import read_target
 from .protocol import (
     AssistantDelta,
     CommandCatalogEvent,
+    ContextCompactionEvent,
     ContextEvent,
     ErrorEvent,
     ExitRequested,
@@ -99,6 +100,33 @@ class JsonlOutputSink:
                 window=usage.context_window,
                 prompt_budget=usage.prompt_budget,
                 reserved_output=usage.reserved_output,
+            )
+        )
+
+    def context_compaction_started(self, *, kind: str) -> None:
+        if kind != "semantic":
+            return
+        self.writer.emit(
+            ContextCompactionEvent(
+                kind="semantic",
+                phase="started",
+            )
+        )
+
+    def context_compaction_finished(
+        self,
+        *,
+        kind: str,
+        duration_ms: int,
+        success: bool,
+    ) -> None:
+        if kind != "semantic":
+            return
+        self.writer.emit(
+            ContextCompactionEvent(
+                kind="semantic",
+                phase="completed" if success else "failed",
+                duration_ms=max(0, duration_ms),
             )
         )
 

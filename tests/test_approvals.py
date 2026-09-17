@@ -43,9 +43,9 @@ class RecordingPreToolHook:
 
 
 class RecordingCommandExecutor:
-    sandboxed = False
-
-    def __init__(self) -> None:
+    def __init__(self, *, sandboxed: bool = False) -> None:
+        self.sandboxed = sandboxed
+        self.command_rules = ()
         self.calls: list[tuple[list[str], bool]] = []
 
     def execute(
@@ -127,12 +127,12 @@ def test_tool_registry_builds_approval_previews(tmp_path) -> None:
     assert patch_preview["files"] == ["README.md"]
     assert patch_preview["summary"]["changed_lines"] == 2
     assert command_preview["allowed"] is True
-    assert command_preview["policy_action"] == "allow"
-    assert command_preview["allowlist_rule"] == "python -m pytest [focused args]"
+    assert command_preview["policy_action"] == "require_approval"
+    assert command_preview["allowlist_rule"] == "local execution default"
     assert command_preview["timeout_seconds"] == 30
-    assert registry.requires_approval("run_command", command_arguments) is False
+    assert registry.requires_approval("run_command", command_arguments) is True
     assert diagnostic_preview["policy_action"] == "require_approval"
-    assert diagnostic_preview["policy_category"] == "diagnostic"
+    assert diagnostic_preview["policy_category"] == "unknown"
     assert diagnostic_preview["effects"]
     assert registry.requires_approval("run_command", diagnostic_arguments) is True
 
@@ -616,7 +616,7 @@ def test_hook_receives_validated_run_command_arguments(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     trace_path = tmp_path / "validated-command" / "trace.jsonl"
-    executor = RecordingCommandExecutor()
+    executor = RecordingCommandExecutor(sandboxed=True)
     hook = RecordingPreToolHook()
     model_client = ScriptedModelClient(
         [
@@ -661,7 +661,7 @@ def test_agent_loop_runs_safe_verification_without_approval(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval_client = StaticApprovalClient(ApprovalDecision.APPROVE)
-    executor = RecordingCommandExecutor()
+    executor = RecordingCommandExecutor(sandboxed=True)
     model_client = ScriptedModelClient(
         [
             ModelResponse(
@@ -706,9 +706,9 @@ def test_agent_loop_reuses_one_command_admission_across_governance(
     policy_calls: list[tuple[str, ...]] = []
     original_check = registry_module.check_command_allowed
 
-    def counting_check(argv):
+    def counting_check(argv, *, sandboxed=False, rules=()):
         policy_calls.append(tuple(argv))
-        return original_check(argv)
+        return original_check(argv, sandboxed=sandboxed, rules=rules)
 
     monkeypatch.setattr(registry_module, "check_command_allowed", counting_check)
     model_client = ScriptedModelClient(
@@ -784,7 +784,7 @@ def test_agent_loop_requests_approval_for_diagnostic_command(tmp_path) -> None:
 
     assert result.status == "completed"
     assert len(approval_client.requests) == 1
-    assert approval_client.requests[0].preview["policy_category"] == "diagnostic"
+    assert approval_client.requests[0].preview["policy_category"] == "unknown"
     assert executor.calls == [
         (["python", "-c", "open('diagnostic.txt', 'w').write('x')"], True)
     ]

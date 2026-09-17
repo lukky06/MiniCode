@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -12,40 +11,30 @@ from minicode_harness.context import (
     ContextObservation,
     RunState,
     SessionCompactionState,
-    build_observation,
     initialize_run_state,
-    mark_verification_failed,
     mark_verification_not_run,
-    mark_verification_passed,
-    record_inspected_file,
-    render_tool_result_message,
-    group_messages,
 )
 from minicode_harness.context.limits import MAX_CHECKPOINT_OBSERVATIONS
-from minicode_harness.loop import AgentLoop, AgentLoopConfig, AgentRunResult
-from minicode_harness.mcp import MCPManager
+from minicode_harness.loop import AgentLoop, AgentRunResult
 from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
-from minicode_harness.models import ModelClient, create_model_client
+from minicode_harness.models import ModelClient, NormalizedToolCall, create_model_client
 from minicode_harness.output import OutputSink
 from minicode_harness.policy import (
     ApprovalPolicy,
+    CommandRule,
     PermissionMode,
-    render_argv,
-    resolve_command_executable_identity,
-    resolve_command_session_grant,
 )
 from minicode_harness.runtime.collaboration import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
+from minicode_harness.runtime.run_executor import build_agent_loop_from_session
 from minicode_harness.runtime.steering import SteeringQueue
 from minicode_harness.storage import HarnessDataStore
 from minicode_harness.tools import create_command_executor
 from minicode_harness.state import (
     ApprovalClient,
-    ApprovalDecision,
     ApprovalRequest,
-    ApprovalResponse,
     ApprovalStore,
     CheckpointStore,
     ExecutionJournal,
@@ -58,7 +47,6 @@ from minicode_harness.state import (
     detect_workspace_conflicts,
     digest_workspace_files,
 )
-from minicode_harness.tools import StaleWriteError, ToolRegistry
 from minicode_harness.trace import TraceWriter
 
 
@@ -300,6 +288,7 @@ def resume_run(
 
     store = run_store or RunStore()
     session = store.load_session(run_id)
+    command_rules = [CommandRule.model_validate(item) for item in session.command_rules]
     run_path = store.path_for(run_id)
     trace_writer = TraceWriter(run_path / "trace.jsonl")
     checkpoint_store = CheckpointStore(run_path / "checkpoints")
@@ -388,114 +377,6 @@ def resume_run(
     start_step = checkpoint.step if checkpoint else 0
 
     pending = approval_store.load_pending()
-    if pending is not None:
-        restored = _resolve_pending_approval(
-            pending=pending,
-            session_workspace=session.workspace,
-            trace_writer=trace_writer,
-            approval_store=approval_store,
-            checkpoint_store=checkpoint_store,
-            approval_client=approval_client,
-            conversation_session=conversation_session,
-            run_id=run_id,
-            task=session.task,
-            observations=observations,
-            message_history=message_history,
-            compaction_state=compaction_state,
-            modified_files=modified_files,
-            run_state=run_state,
-            task_state=task_state,
-            tool_calls=tool_calls,
-            mcp_config=session.mcp_config,
-            cancellation_token=cancellation_token,
-        )
-        if restored.status != "continued":
-            latest_checkpoint = checkpoint_store.load_latest()
-            latest_history = (
-                checkpoint_store.load_history(latest_checkpoint)
-                if latest_checkpoint is not None
-                else message_history
-            )
-            _sync_conversation_history(
-                conversation_session,
-                latest_history,
-                (
-                    latest_checkpoint.compaction_state
-                    if latest_checkpoint is not None
-                    else compaction_state
-                ),
-                trace_writer=trace_writer,
-                run_id=run_id,
-            )
-            return restored
-        checkpoint = checkpoint_store.load_latest()
-        observations = list(checkpoint.recent_observations if checkpoint else observations)
-        message_history = (
-            checkpoint_store.load_history(checkpoint)
-            if checkpoint is not None
-            else message_history
-        )
-        compaction_state = (
-            checkpoint.compaction_state.model_copy(deep=True)
-            if checkpoint is not None
-            else compaction_state
-        )
-        modified_files = list(checkpoint.modified_files if checkpoint else modified_files)
-        run_state = initialize_run_state(checkpoint.run_state if checkpoint else run_state)
-        task_state = checkpoint.task_state if checkpoint else task_state
-        tool_calls = checkpoint.tool_calls if checkpoint else tool_calls
-        start_step = checkpoint.step if checkpoint else start_step
-
-        if (
-            checkpoint is not None
-            and steering_queue is not None
-            and (cancellation_token is None or not cancellation_token.is_cancelled)
-            and start_step < session.max_steps
-            and _restored_tool_batch_is_complete(
-                message_history,
-                pending_tool_call_id=pending.tool_call_id,
-            )
-        ):
-            steering_message = steering_queue.dequeue()
-            if steering_message is not None:
-                message_history.append(
-                    {"role": "user", "content": steering_message}
-                )
-                checkpoint = _checkpoint_for_resume(
-                    run_id=run_id,
-                    step=start_step,
-                    task=session.task,
-                    workspace=session.workspace,
-                    observations=observations,
-                    compaction_state=compaction_state,
-                    modified_files=modified_files,
-                    run_state=run_state,
-                    task_state=task_state,
-                    tool_calls=tool_calls,
-                    memory_snapshot_hash=checkpoint.memory_snapshot_hash,
-                    memory_snapshot_path=checkpoint.memory_snapshot_path,
-                    status="running",
-                    reason="steering_message",
-                )
-                saved_path = checkpoint_store.save(
-                    checkpoint,
-                    message_history=message_history,
-                )
-                trace_writer.write_event(
-                    "steering_message_consumed",
-                    step=start_step,
-                    content=steering_message,
-                    remaining=len(steering_queue),
-                    path=str(saved_path),
-                    source="resume_pending_approval",
-                )
-                _sync_conversation_history(
-                    conversation_session,
-                    message_history,
-                    checkpoint.compaction_state,
-                    trace_writer=trace_writer,
-                    run_id=run_id,
-                )
 
     resolved_model_client = model_client or create_model_client(
         provider=session.provider,
@@ -570,40 +451,34 @@ def resume_run(
     command_executor = create_command_executor(
         session.sandbox_mode,
         image=session.sandbox_image,
+        command_rules=command_rules,
+        workspace_writable=PermissionMode(session.permission_mode) != PermissionMode.READ_ONLY,
     )
-    loop = AgentLoop(
-        task=session.task,
-        workspace=session.workspace,
+    loop = build_agent_loop_from_session(
+        session,
         model_client=resolved_model_client,
         trace_writer=trace_writer,
-        config=AgentLoopConfig(
-            max_steps=session.max_steps,
-            start_step=start_step,
-            repository_memory_enabled=session.repository_memory_enabled,
-            enable_subagents=session.subagents_enabled,
-            enable_worktree_workers=not session.no_write,
-        ),
-        skill_names=_parse_skill_names(session.skills),
-        no_skills=session.no_skills,
-        data_dir=(
-            repository_memory.data_dir
-            if repository_memory is not None
-            else resolved_data_dir
-        ),
         repository_memory=repository_memory,
         memory_snapshot_hash=(memory_snapshot.index_hash if memory_snapshot else None),
         memory_snapshot_path=(
             memory_snapshot_store.checkpoint_path if memory_snapshot is not None else None
         ),
         long_term_context=long_term_context,
-        enable_write=not session.no_write,
-        approval_policy=ApprovalPolicy(session.approval_policy),
-        permission_mode=PermissionMode(session.permission_mode),
-        collaboration_mode=CollaborationMode(session.collaboration_mode),
+        command_executor=command_executor,
         approval_client=approval_client,
-        approval_store=approval_store,
+        session_memory=conversation_session,
+        output_sink=output_sink,
+        stream_model=stream_model,
+        cancellation_token=cancellation_token,
+        steering_queue=steering_queue,
+        data_dir=(
+            repository_memory.data_dir
+            if repository_memory is not None
+            else resolved_data_dir
+        ),
         checkpoint_store=checkpoint_store,
-        run_id=run_id,
+        approval_store=approval_store,
+        start_step=start_step,
         initial_observations=observations,
         initial_message_history=message_history,
         initial_compaction_state=compaction_state,
@@ -611,14 +486,6 @@ def resume_run(
         initial_run_state=run_state,
         initial_task_state=task_state,
         initial_tool_calls=tool_calls,
-        provider=session.provider,
-        model=session.model or getattr(resolved_model_client, "model", None),
-        session_memory=conversation_session,
-        output_sink=output_sink,
-        stream_model=stream_model,
-        cancellation_token=cancellation_token,
-        mcp_config=session.mcp_config,
-        command_executor=command_executor,
         subagent_model_client_factory=(
             (lambda: create_model_client(
                 provider=session.provider,
@@ -627,8 +494,38 @@ def resume_run(
             if model_client is None
             else None
         ),
-        steering_queue=steering_queue,
     )
+    if pending is not None:
+        restored_result = _restore_pending_approval_with_runtime(loop, pending)
+        if restored_result is not None:
+            store.update_session_state(
+                run_id,
+                status=restored_result.status,
+                current_step=restored_result.steps,
+            )
+            _sync_conversation_history(
+                conversation_session,
+                loop.user_turn.messages,
+                loop.compaction_state,
+                trace_writer=trace_writer,
+                run_id=run_id,
+            )
+            trace_writer.write_event(
+                "resume_finished",
+                run_id=run_id,
+                conversation_session_id=session.conversation_session_id,
+                status=restored_result.status,
+                stop_reason=restored_result.stop_reason,
+            )
+            return ResumeResult(
+                status=restored_result.status,
+                run_id=run_id,
+                reason=restored_result.stop_reason,
+                final_text=restored_result.final_text,
+                stop_summary=restored_result.stop_summary,
+                agent_result=restored_result,
+            )
+        loop._consume_one_steering_message(pending.step or start_step)
     agent_result = loop.run()
     store.update_session_state(
         run_id,
@@ -665,51 +562,14 @@ def resume_run(
     )
 
 
-def _resume_expected_write_hash(
-    run_state: RunState,
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> str | None:
-    if tool_name != "write" or not bool(arguments.get("overwrite", False)):
-        return None
-    path = str(arguments.get("path") or "").strip().replace("\\", "/").removeprefix("./")
-    for inspected in reversed(run_state.inspected_files):
-        inspected_path = inspected.path.replace("\\", "/").removeprefix("./")
-        if inspected_path != path:
-            continue
-        if inspected.content_status not in {
-            "full_content_available_in_context",
-            "full_content_available_via_artifact",
-        }:
-            return None
-        return inspected.content_sha256
-    return None
-
-
-def _resolve_pending_approval(
-    *,
+def _restore_pending_approval_with_runtime(
+    loop: AgentLoop,
     pending: ApprovalRequest,
-    session_workspace: str,
-    trace_writer: TraceWriter,
-    approval_store: ApprovalStore,
-    checkpoint_store: CheckpointStore,
-    approval_client: ApprovalClient,
-    conversation_session: ReplSessionMemory | None,
-    run_id: str,
-    task: str,
-    observations: list[Any],
-    message_history: list[dict[str, Any]],
-    compaction_state: SessionCompactionState,
-    modified_files: list[str],
-    run_state: RunState,
-    task_state: TaskListState,
-    tool_calls: int,
-    mcp_config: str | None,
-    cancellation_token: CancellationToken | None,
-) -> ResumeResult:
-    step = pending.step or 0
-    prior_checkpoint = checkpoint_store.load_latest()
-    trace_writer.write_event(
+) -> AgentRunResult | None:
+    """Resume one pending Tool Call through the normal ToolRuntime path."""
+
+    step = pending.step or loop.config.start_step
+    loop.trace_writer.write_event(
         "approval_restored",
         step=step,
         approval_id=pending.id,
@@ -717,254 +577,62 @@ def _resolve_pending_approval(
         tool=pending.tool_name,
         preview_summary=pending.preview.get("summary", pending.preview),
     )
-    response = approval_client.decide(pending)
-    if response.decision == ApprovalDecision.APPROVE_SESSION:
-        argv = pending.arguments.get("argv")
-        session_grant = (
-            resolve_command_session_grant(session_workspace, argv)
-            if pending.tool_name == "run_command" and isinstance(argv, list) and argv
-            else None
-        )
-        executable = (
-            resolve_command_executable_identity(session_workspace, str(argv[0]))
-            if pending.tool_name == "run_command" and isinstance(argv, list) and argv
-            else None
-        )
-        if session_grant is None or conversation_session is None:
-            response = ApprovalResponse(
-                decision=ApprovalDecision.REJECT,
-                reason="Session command grant could not be restored safely.",
-            )
-        else:
-            conversation_session.grant_command_approval(session_grant)
-            trace_writer.write_event(
-                "approval_session_granted",
-                step=step,
-                approval_id=pending.id,
-                tool_call_id=pending.tool_call_id,
-                tool=pending.tool_name,
-                executable=executable,
-                grant_id=session_grant,
-                restored=True,
-            )
-    trace_writer.write_event(
-        "approval_resolved",
-        step=step,
-        approval_id=pending.id,
-        tool_call_id=pending.tool_call_id,
-        tool=pending.tool_name,
-        decision=response.decision.value,
-        reason=response.reason,
+    _ensure_tool_call_owner(loop.user_turn.messages, pending)
+    tool_call = NormalizedToolCall(
+        id=pending.tool_call_id,
+        name=pending.tool_name,
+        arguments=dict(pending.arguments),
     )
-    approval_store.clear_pending()
-
-    if response.decision not in {
-        ApprovalDecision.APPROVE,
-        ApprovalDecision.APPROVE_SESSION,
-    }:
-        reason = f"approval_{response.decision.value}"
-        content = (
-            f"Tool {pending.tool_name} was not executed because approval decision was "
-            f"{response.decision.value}. Choose another safe action or explain the blocker."
+    hidden_tool_names = set(loop.config.hidden_tool_names)
+    collaboration_tool_names = (
+        set(loop.tools.readonly_tool_names())
+        if loop.collaboration_mode == CollaborationMode.PLAN
+        else None
+    )
+    tool_names = tuple(
+        str(schema["function"]["name"])
+        for schema in loop.tools.schemas()
+        if str(schema["function"]["name"]) not in hidden_tool_names
+        and (
+            collaboration_tool_names is None
+            or str(schema["function"]["name"]) in collaboration_tool_names
         )
-        observation = ContextObservation(
-            tool_call_id=pending.tool_call_id,
-            tool_name=pending.tool_name,
-            content=content,
-            output_preview=content,
-            token_estimate=max(1, len(content) // 4),
-            summary=content,
-            is_important=True,
-            metadata={
-                "status": reason,
-                "approval_fingerprint": _pending_tool_fingerprint(pending),
-            },
-        )
-        observations.append(observation)
-        _ensure_tool_call_owner(message_history, pending)
-        tool_message = {
-            "role": "tool",
-            "tool_call_id": pending.tool_call_id,
-            "content": render_tool_result_message(observation),
-        }
-        message_history.append(dict(tool_message))
-        status = "stopped" if response.decision == ApprovalDecision.ABORT else "running"
-        checkpoint_store.save(
-            _checkpoint_for_resume(
-                run_id=run_id,
-                step=step,
-                task=task,
-                workspace=session_workspace,
-                observations=observations,
-                compaction_state=compaction_state,
-                modified_files=modified_files,
-                run_state=run_state,
-                task_state=task_state,
-                tool_calls=tool_calls,
-                memory_snapshot_hash=(
-                    prior_checkpoint.memory_snapshot_hash if prior_checkpoint else None
-                ),
-                memory_snapshot_path=(
-                    prior_checkpoint.memory_snapshot_path if prior_checkpoint else None
-                ),
-                status=status,
-                reason=reason,
+    )
+    if loop.tools.counts_against_tool_budget(tool_call.name):
+        loop.tool_call_count += 1
+    outcome = loop.tool_runtime.execute(
+        step=step,
+        tool_call=tool_call,
+        available_tool_names=tool_names,
+        workspace_generation=loop.workspace_generation,
+    )
+    guidance = loop.tool_batch.commit_outcome(
+        loop,
+        step,
+        tool_call,
+        outcome,
+    )
+    if guidance is not None:
+        loop.user_turn.append_message({"role": "user", "content": guidance.message})
+        loop.trace_writer.write_event(
+            "progress_stagnation_nudge",
+            step=step,
+            level=guidance.level,
+            guidance=guidance.message,
+            non_write_calls_since_progress=(
+                loop.progress_policy.non_write_calls_since_progress
             ),
-            message_history=message_history,
+            remaining_steps=max(0, loop.config.max_steps - step),
         )
-        if response.decision == ApprovalDecision.ABORT:
-            return ResumeResult(status="stopped", run_id=run_id, reason=reason)
-        return ResumeResult(status="continued", run_id=run_id, reason=reason)
-
-    mcp_manager = MCPManager.from_config_file(mcp_config) if mcp_config else None
-    registry = ToolRegistry(
-        session_workspace,
-        enable_write=True,
-        mcp_manager=mcp_manager,
-        cancellation_token=cancellation_token,
-    )
-    try:
-        admission = registry.admit(pending.tool_name, pending.arguments)
-        expected_file_sha256 = _resume_expected_write_hash(
-            run_state,
-            admission.name,
-            admission.arguments,
+        loop._persist_and_checkpoint(step, reason="progress_guidance")
+    if outcome.stop_reason:
+        return loop._finish_stopped_run(
+            step=step,
+            reason=outcome.stop_reason,
+            final_text=None,
+            rollback=False,
         )
-        try:
-            result = registry.execute_admitted(
-                admission,
-                approval_granted=True,
-                expected_file_sha256=expected_file_sha256,
-            )
-        except StaleWriteError as exc:
-            result = None
-            content = (
-                f"Tool {admission.name} was not executed: {exc} "
-                "No workspace write occurred. Read the complete target file again before retrying."
-            )
-            observation = ContextObservation(
-                tool_call_id=pending.tool_call_id,
-                tool_name=admission.name,
-                content=content,
-                output_preview=content,
-                token_estimate=max(1, len(content) // 4),
-                summary=content,
-                is_important=True,
-                metadata={
-                    "status": "stale_write",
-                    "error_type": "stale_write",
-                    "reason": "resume_write_version_unavailable_or_changed",
-                    "side_effect": "none",
-                },
-            )
-        else:
-            observation, _ = build_observation(
-                tool_call_id=pending.tool_call_id,
-                tool_name=admission.name,
-                result=result,
-                artifact_dir=trace_writer.trace_path.parent / "artifacts",
-            )
-    finally:
-        if mcp_manager is not None:
-            mcp_manager.close()
-    observations.append(observation)
-    _ensure_tool_call_owner(message_history, pending)
-    tool_message = {
-        "role": "tool",
-        "tool_call_id": pending.tool_call_id,
-        "content": render_tool_result_message(observation),
-    }
-    message_history.append(dict(tool_message))
-    modified = (
-        _modified_files_from_result(pending.tool_name, result)
-        if result is not None
-        else []
-    )
-    for modified_file in modified:
-        if modified_file not in modified_files:
-            modified_files.append(modified_file)
-    if modified:
-        mark_verification_not_run(run_state)
-
-    if pending.tool_name == "run_command":
-        pending_argv = pending.arguments.get("argv")
-        fallback_command = (
-            render_argv(pending_argv)
-            if isinstance(pending_argv, list)
-            and all(isinstance(item, str) for item in pending_argv)
-            else ""
-        )
-        command = str(observation.metadata.get("command") or fallback_command)
-        returncode = observation.metadata.get("returncode")
-        if returncode == 0:
-            mark_verification_passed(run_state, command=command, returncode=0)
-        elif returncode is not None:
-            mark_verification_failed(
-                run_state,
-                command=command,
-                returncode=int(returncode),
-            )
-
-    record_inspected_file(
-        state=run_state,
-        tool_name=pending.tool_name,
-        tool_call_id=pending.tool_call_id,
-        arguments=pending.arguments,
-        observation=observation,
-        step=step,
-        workspace_generation=1 if modified_files else 0,
-    )
-    trace_writer.write_event(
-        "run_state_updated",
-        step=step,
-        modified_files=len(modified_files),
-        verification_status=run_state.verification.status,
-        inspected_files=len(run_state.inspected_files),
-        tool_calls=tool_calls,
-    )
-    trace_writer.write_event(
-        "tool_result",
-        step=step,
-        tool_call_id=pending.tool_call_id,
-        tool=pending.tool_name,
-        status="ok",
-        truncated=observation.is_truncated,
-        preview=observation.output_preview,
-        artifact_path=observation.artifact_path,
-    )
-    checkpoint = _checkpoint_for_resume(
-        run_id=run_id,
-        step=step,
-        task=task,
-        workspace=session_workspace,
-        observations=observations,
-        compaction_state=compaction_state,
-        modified_files=modified_files,
-        run_state=run_state,
-        task_state=task_state,
-        tool_calls=tool_calls,
-        memory_snapshot_hash=(
-            prior_checkpoint.memory_snapshot_hash if prior_checkpoint else None
-        ),
-        memory_snapshot_path=(
-            prior_checkpoint.memory_snapshot_path if prior_checkpoint else None
-        ),
-        status="running",
-        reason=f"restored_approval:{pending.tool_name}",
-    )
-    saved_path = checkpoint_store.save(
-        checkpoint,
-        message_history=message_history,
-    )
-    trace_writer.write_event(
-        "checkpoint_saved",
-        step=step,
-        path=str(saved_path),
-        status=checkpoint.status,
-        reason=checkpoint.reason,
-        modified_files=modified_files,
-    )
-    return ResumeResult(status="continued", run_id=run_id, reason="approval_restored")
+    return None
 
 
 def _load_conversation_session(
@@ -1014,44 +682,6 @@ def _sync_conversation_history(
             error_type=type(exc).__name__,
             error=str(exc),
         )
-
-
-def _restored_tool_batch_is_complete(
-    messages: list[dict[str, Any]],
-    *,
-    pending_tool_call_id: str,
-) -> bool:
-    """Return whether the restored pending call now closes its Tool group."""
-
-    for group in group_messages(messages):
-        owner = group[0]
-        if owner.get("role") != "assistant" or not owner.get("tool_calls"):
-            continue
-        expected_ids = {
-            str(call.get("id"))
-            for call in owner.get("tool_calls") or []
-            if call.get("id") is not None
-        }
-        if pending_tool_call_id not in expected_ids:
-            continue
-        result_ids = [
-            str(message.get("tool_call_id"))
-            for message in group[1:]
-            if message.get("role") == "tool"
-        ]
-        return len(result_ids) == len(expected_ids) and set(result_ids) == expected_ids
-    return False
-
-
-def _pending_tool_fingerprint(pending: ApprovalRequest) -> str:
-    payload = json.dumps(
-        {"name": pending.tool_name, "arguments": pending.arguments},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _ensure_tool_call_owner(
@@ -1153,12 +783,6 @@ def _modified_files_from_result(tool_name: str, result: Any) -> list[str]:
         path = payload.get("path")
         return [path] if path else []
     return []
-
-
-def _parse_skill_names(skills: str | None) -> list[str] | None:
-    if skills is None:
-        return None
-    return [skill.strip() for skill in skills.split(",") if skill.strip()]
 
 
 def _append_unique_limited(values: list[str], value: str, *, limit: int) -> None:

@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 import tomllib
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ApprovalPolicy, CommandRule, PermissionMode
 from minicode_harness.tools import SandboxMode
 
 
@@ -22,6 +22,7 @@ class UserConfig(BaseModel):
     approval_policy: ApprovalPolicy | None = None
     sandbox: SandboxMode | None = None
     sandbox_image: str | None = None
+    command_rules: list[CommandRule] = Field(default_factory=list)
 
     @field_validator("provider", "model", "sandbox_image")
     @classmethod

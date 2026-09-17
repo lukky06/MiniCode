@@ -80,6 +80,14 @@ class ToolExecutionOutcome:
 
 
 @dataclass(frozen=True)
+class _PreparedToolExecution:
+    admission: ToolAdmission
+    expected_file_sha256: str | None
+    mutation_preview: dict[str, Any] | None
+    read_overlap_detected: bool
+
+
+@dataclass(frozen=True)
 class RollbackOutcome:
     performed: bool
     restored: tuple[str, ...] = ()
@@ -195,7 +203,7 @@ class ToolRuntime:
         workspace_generation: int,
         memory_read_allowed: bool | None = None,
     ) -> ToolExecutionOutcome:
-        """Validate and execute one Tool Call without mutating AgentLoop state."""
+        """Run one Tool Call through prepare, execute, and finalize phases."""
 
         self.trace_writer.write_event(
             "tool_called",
@@ -206,188 +214,149 @@ class ToolRuntime:
         )
         self.emit_tool_call_started(step, tool_call)
         try:
-            if tool_call.name not in available_tool_names:
-                return self._unavailable_tool_outcome(step, tool_call, available_tool_names)
-
-            if is_memory_read(tool_call.name, tool_call.arguments):
-                if memory_read_allowed is False:
-                    return self._memory_topic_read_limit_outcome(step, tool_call)
-                if memory_read_allowed is None:
-                    with self._state_lock:
-                        limit_reached = (
-                            self._memory_topic_read_count
-                            >= self.max_memory_topic_reads
-                        )
-                    if limit_reached:
-                        return self._memory_topic_read_limit_outcome(step, tool_call)
-
-            if tool_call.argument_parse_error is not None:
-                return self._malformed_tool_arguments_outcome(step, tool_call)
-
-            raw_arguments = dict(tool_call.arguments)
-            try:
-                admission = self.tools.admit(tool_call.name, raw_arguments)
-            except ValidationError as exc:
-                return self._invalid_tool_arguments_outcome(step, tool_call, exc)
-
-            tool_call.arguments = deepcopy(admission.arguments)
-            self.trace_writer.write_event(
-                "tool_arguments_validated",
-                step=step,
-                tool_call_id=tool_call.id,
-                tool=tool_call.name,
-                argument_keys=sorted(admission.arguments),
-                risk_level=admission.risk_level.value,
-                command_category=(
-                    admission.command_policy.category.value
-                    if admission.command_policy is not None
-                    else None
-                ),
-                requires_approval=admission.requires_approval,
-                allowed=admission.allowed,
-            )
-            decision = self.hook_manager.emit(
-                HookEvent(
-                    name="pre_tool_use",
-                    run_id=self.run_id,
-                    task=self.task,
-                    workspace=self.workspace,
-                    step=step,
-                    payload={
-                        "loop": self.hook_owner,
-                        "tool_call": tool_call,
-                        "command_policy": admission.command_policy,
-                        "available_tool_names": available_tool_names,
-                    },
-                )
-            )
-            hook_outcome = self._hook_outcome(step, tool_call, decision)
-            if hook_outcome is not None:
-                return hook_outcome
-
-            tool_call.arguments = deepcopy(admission.arguments)
-            repeated_failure = self._same_failed_command_outcome(
-                step,
-                tool_call,
-                workspace_generation=workspace_generation,
-            )
-            if repeated_failure is not None:
-                return repeated_failure
-            reused = self._runtime_reuse_outcome(
-                step,
-                tool_call,
-                workspace_generation=workspace_generation,
-            )
-            if reused is not None:
-                return reused
-            read_overlap_detected = self._reuse_tracker.overlap_detected(
-                tool_call,
-                workspace_generation=workspace_generation,
-            )
-
-            expected_file_sha256, stale_write = self._prepare_write_freshness(
-                step,
-                tool_call,
-            )
-            if stale_write is not None:
-                return stale_write
-
-            mutation_preview = (
-                self.tools.preview_admitted(admission)
-                if admission.name in {"edit", "write", "apply_patch"}
-                else None
-            )
-            approval_decision = self._request_approval(
-                step,
-                tool_call,
-                admission,
-                preview=mutation_preview,
-            )
-            if approval_decision is not None:
-                status = f"approval_{approval_decision.value}"
-                content = (
-                    f"Tool {tool_call.name} was not executed because approval decision was "
-                    f"{approval_decision.value}. Choose another safe action or explain the blocker."
-                )
-                observation = build_simple_observation(
-                    tool_call,
-                    content,
-                    status=status,
-                    metadata={"approval_fingerprint": tool_call_fingerprint(tool_call)},
-                )
-                self.trace_writer.write_event(
-                    "tool_result",
-                    step=step,
-                    tool_call_id=tool_call.id,
-                    tool=tool_call.name,
-                    status=status,
-                    reason=approval_decision.value,
-                )
-                return ToolExecutionOutcome(
-                    observation=observation,
-                    stop_reason=(
-                        "approval_aborted"
-                        if approval_decision == ApprovalDecision.ABORT
-                        else None
-                    ),
-                )
-
-            self._snapshot_write_targets(tool_call)
-            journal_entry = self._journal_prepared(
+            prepared = self._prepare_tool_call(
                 step=step,
                 tool_call=tool_call,
-                admission=admission,
+                available_tool_names=available_tool_names,
+                workspace_generation=workspace_generation,
+                memory_read_allowed=memory_read_allowed,
             )
-            result = self.tools.execute_admitted(
-                admission,
-                approval_granted=True,
-                expected_file_sha256=expected_file_sha256,
+            if isinstance(prepared, ToolExecutionOutcome):
+                return prepared
+            result = self._execute_prepared_tool(
+                step=step,
+                tool_call=tool_call,
+                prepared=prepared,
             )
-            self._journal_completed(journal_entry, result)
-            observation, compression_events = build_observation(
-                tool_call_id=tool_call.id,
-                tool_name=tool_call.name,
+            return self._finalize_tool_result(
+                step=step,
+                tool_call=tool_call,
+                prepared=prepared,
                 result=result,
-                artifact_dir=self.artifact_dir,
-                tool_arguments=tool_call.arguments,
-            )
-            for event in compression_events:
-                self.trace_writer.write_event(
-                    "context_compressed",
-                    step=step,
-                    **event.model_dump(mode="json"),
-                )
-            if isinstance(result, FileReadResult) and result.content_sha256:
-                observation.metadata["content_sha256"] = result.content_sha256
-            if read_overlap_detected:
-                observation.metadata["overlap_detected"] = True
-            self._annotate_command_lifecycle(result, observation)
-            self._trace_command_execution_timing(step, tool_call, result)
-            self._annotate_mutation_diff(
-                result,
-                observation,
-                preview=mutation_preview,
-            )
-            if admission.command_policy is not None:
-                observation.metadata["command_category"] = (
-                    admission.command_policy.category.value
-                )
-            write_strategy = write_strategy_from_result(tool_call.name, result)
-            if write_strategy is not None:
-                observation.metadata["write_strategy"] = write_strategy
-            self._reuse_tracker.record(
-                tool_call,
-                observation,
                 workspace_generation=workspace_generation,
             )
-            self._record_command_attempt(
-                tool_call,
-                observation,
-                workspace_generation=workspace_generation,
+        except StaleWriteError as exc:
+            return self._stale_write_error_outcome(step, tool_call, str(exc))
+        except Exception as exc:
+            return self._unexpected_tool_error_outcome(step, tool_call, exc)
+
+    def _prepare_tool_call(
+        self,
+        *,
+        step: int,
+        tool_call: NormalizedToolCall,
+        available_tool_names: tuple[str, ...],
+        workspace_generation: int,
+        memory_read_allowed: bool | None,
+    ) -> _PreparedToolExecution | ToolExecutionOutcome:
+        if tool_call.name not in available_tool_names:
+            return self._unavailable_tool_outcome(step, tool_call, available_tool_names)
+
+        if is_memory_read(tool_call.name, tool_call.arguments):
+            if memory_read_allowed is False:
+                return self._memory_topic_read_limit_outcome(step, tool_call)
+            if memory_read_allowed is None:
+                with self._state_lock:
+                    limit_reached = (
+                        self._memory_topic_read_count >= self.max_memory_topic_reads
+                    )
+                if limit_reached:
+                    return self._memory_topic_read_limit_outcome(step, tool_call)
+
+        if tool_call.argument_parse_error is not None:
+            return self._malformed_tool_arguments_outcome(step, tool_call)
+
+        raw_arguments = dict(tool_call.arguments)
+        try:
+            admission = self.tools.admit(tool_call.name, raw_arguments)
+        except ValidationError as exc:
+            return self._invalid_tool_arguments_outcome(step, tool_call, exc)
+
+        tool_call.arguments = deepcopy(admission.arguments)
+        self.trace_writer.write_event(
+            "tool_arguments_validated",
+            step=step,
+            tool_call_id=tool_call.id,
+            tool=tool_call.name,
+            argument_keys=sorted(admission.arguments),
+            risk_level=admission.risk_level.value,
+            command_category=(
+                admission.command_policy.category.value
+                if admission.command_policy is not None
+                else None
+            ),
+            requires_approval=admission.requires_approval,
+            allowed=admission.allowed,
+        )
+        decision = self.hook_manager.emit(
+            HookEvent(
+                name="pre_tool_use",
+                run_id=self.run_id,
+                task=self.task,
+                workspace=self.workspace,
+                step=step,
+                payload={
+                    "loop": self.hook_owner,
+                    "tool_call": tool_call,
+                    "command_policy": admission.command_policy,
+                    "available_tool_names": available_tool_names,
+                },
             )
-            self._record_memory_read(tool_call, observation)
-            status = str(
-                observation.metadata.get("status") or tool_result_status(observation)
+        )
+        hook_outcome = self._hook_outcome(step, tool_call, decision)
+        if hook_outcome is not None:
+            return hook_outcome
+
+        # Hooks see normalized arguments, then admission regains authority before execution.
+        tool_call.arguments = deepcopy(admission.arguments)
+        repeated_failure = self._same_failed_command_outcome(
+            step,
+            tool_call,
+            workspace_generation=workspace_generation,
+        )
+        if repeated_failure is not None:
+            return repeated_failure
+        reused = self._runtime_reuse_outcome(
+            step,
+            tool_call,
+            workspace_generation=workspace_generation,
+        )
+        if reused is not None:
+            return reused
+        read_overlap_detected = self._reuse_tracker.overlap_detected(
+            tool_call,
+            workspace_generation=workspace_generation,
+        )
+
+        expected_file_sha256, stale_write = self._prepare_write_freshness(
+            step,
+            tool_call,
+        )
+        if stale_write is not None:
+            return stale_write
+
+        mutation_preview = (
+            self.tools.preview_admitted(admission)
+            if admission.name in {"edit", "write", "apply_patch"}
+            else None
+        )
+        approval_decision = self._request_approval(
+            step,
+            tool_call,
+            admission,
+            preview=mutation_preview,
+        )
+        if approval_decision is not None:
+            status = f"approval_{approval_decision.value}"
+            content = (
+                f"Tool {tool_call.name} was not executed because approval decision was "
+                f"{approval_decision.value}. Choose another safe action or explain the blocker."
+            )
+            observation = build_simple_observation(
+                tool_call,
+                content,
+                status=status,
+                metadata={"approval_fingerprint": tool_call_fingerprint(tool_call)},
             )
             self.trace_writer.write_event(
                 "tool_result",
@@ -395,60 +364,163 @@ class ToolRuntime:
                 tool_call_id=tool_call.id,
                 tool=tool_call.name,
                 status=status,
-                truncated=observation.is_truncated,
-                preview=observation.output_preview,
-                artifact_path=observation.artifact_path,
-                write_strategy=write_strategy,
+                reason=approval_decision.value,
             )
             return ToolExecutionOutcome(
                 observation=observation,
-                modified_files=modified_files_from_result(tool_call.name, result),
+                stop_reason=(
+                    "approval_aborted"
+                    if approval_decision == ApprovalDecision.ABORT
+                    else None
+                ),
             )
-        except StaleWriteError as exc:
-            return self._stale_write_error_outcome(step, tool_call, str(exc))
-        except Exception as exc:
-            self.hook_manager.emit(
-                HookEvent(
-                    name="error",
-                    run_id=self.run_id,
-                    task=self.task,
-                    workspace=self.workspace,
-                    step=step,
-                    payload={
-                        "loop": self.hook_owner,
-                        "error": exc,
-                        "tool_call": tool_call,
-                        "kind": "tool_error",
-                    },
-                )
+
+        return _PreparedToolExecution(
+            admission=admission,
+            expected_file_sha256=expected_file_sha256,
+            mutation_preview=mutation_preview,
+            read_overlap_detected=read_overlap_detected,
+        )
+
+    def _execute_prepared_tool(
+        self,
+        *,
+        step: int,
+        tool_call: NormalizedToolCall,
+        prepared: _PreparedToolExecution,
+    ) -> Any:
+        self._snapshot_write_targets(tool_call)
+        journal_entry = self._journal_prepared(
+            step=step,
+            tool_call=tool_call,
+            admission=prepared.admission,
+        )
+        result = self.tools.execute_admitted(
+            prepared.admission,
+            approval_granted=True,
+            expected_file_sha256=prepared.expected_file_sha256,
+        )
+        self._journal_completed(journal_entry, result)
+        return result
+
+    def _finalize_tool_result(
+        self,
+        *,
+        step: int,
+        tool_call: NormalizedToolCall,
+        prepared: _PreparedToolExecution,
+        result: Any,
+        workspace_generation: int,
+    ) -> ToolExecutionOutcome:
+        observation, compression_events = build_observation(
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+            result=result,
+            artifact_dir=self.artifact_dir,
+            tool_arguments=tool_call.arguments,
+        )
+        for event in compression_events:
+            self.trace_writer.write_event(
+                "context_compressed",
+                step=step,
+                **event.model_dump(mode="json"),
             )
-            contract = classify_tool_exception(exc)
-            content = bounded_tool_error_message(exc, fallback=contract["message"])
-            observation = build_simple_observation(
-                tool_call,
-                content,
-                status="error",
-                metadata={
-                    "error_type": contract["error_type"],
-                    "retryable": contract["retryable"],
-                    "retry_hint": contract["retry_hint"],
-                    "side_effect": contract["side_effect"],
-                    "exception_type": type(exc).__name__,
+        if isinstance(result, FileReadResult) and result.content_sha256:
+            observation.metadata["content_sha256"] = result.content_sha256
+        if prepared.read_overlap_detected:
+            observation.metadata["overlap_detected"] = True
+        self._annotate_command_lifecycle(result, observation)
+        self._trace_command_execution_timing(step, tool_call, result)
+        self._annotate_mutation_diff(
+            result,
+            observation,
+            preview=prepared.mutation_preview,
+        )
+        if prepared.admission.command_policy is not None:
+            observation.metadata["command_category"] = (
+                prepared.admission.command_policy.category.value
+            )
+        write_strategy = write_strategy_from_result(tool_call.name, result)
+        if write_strategy is not None:
+            observation.metadata["write_strategy"] = write_strategy
+        self._reuse_tracker.record(
+            tool_call,
+            observation,
+            workspace_generation=workspace_generation,
+        )
+        self._record_command_attempt(
+            tool_call,
+            observation,
+            workspace_generation=workspace_generation,
+        )
+        self._record_memory_read(tool_call, observation)
+        status = str(
+            observation.metadata.get("status") or tool_result_status(observation)
+        )
+        self.trace_writer.write_event(
+            "tool_result",
+            step=step,
+            tool_call_id=tool_call.id,
+            tool=tool_call.name,
+            status=status,
+            truncated=observation.is_truncated,
+            preview=observation.output_preview,
+            artifact_path=observation.artifact_path,
+            write_strategy=write_strategy,
+        )
+        return ToolExecutionOutcome(
+            observation=observation,
+            modified_files=modified_files_from_result(tool_call.name, result),
+        )
+
+    def _unexpected_tool_error_outcome(
+        self,
+        step: int,
+        tool_call: NormalizedToolCall,
+        exc: Exception,
+    ) -> ToolExecutionOutcome:
+        self.hook_manager.emit(
+            HookEvent(
+                name="error",
+                run_id=self.run_id,
+                task=self.task,
+                workspace=self.workspace,
+                step=step,
+                payload={
+                    "loop": self.hook_owner,
+                    "error": exc,
+                    "tool_call": tool_call,
+                    "kind": "tool_error",
                 },
             )
-            self.trace_writer.write_event(
-                "tool_result",
-                step=step,
-                tool_call_id=tool_call.id,
-                tool=tool_call.name,
-                status="error",
-                error_type=contract["error_type"],
-                exception_type=type(exc).__name__,
-                retryable=contract["retryable"],
-                side_effect=contract["side_effect"],
-                error=content,
-            )
-            return ToolExecutionOutcome(observation=observation)
+        )
+        contract = classify_tool_exception(exc)
+        content = bounded_tool_error_message(exc, fallback=contract["message"])
+        observation = build_simple_observation(
+            tool_call,
+            content,
+            status="error",
+            metadata={
+                "error_type": contract["error_type"],
+                "retryable": contract["retryable"],
+                "retry_hint": contract["retry_hint"],
+                "side_effect": contract["side_effect"],
+                "exception_type": type(exc).__name__,
+            },
+        )
+        self.trace_writer.write_event(
+            "tool_result",
+            step=step,
+            tool_call_id=tool_call.id,
+            tool=tool_call.name,
+            status="error",
+            error_type=contract["error_type"],
+            exception_type=type(exc).__name__,
+            retryable=contract["retryable"],
+            side_effect=contract["side_effect"],
+            error=content,
+        )
+        return ToolExecutionOutcome(observation=observation)
 
     def _journal_prepared(
         self,
@@ -1061,7 +1133,13 @@ class ToolRuntime:
         argv = tool_call.arguments.get("argv")
         if not isinstance(argv, list) or not argv:
             return None
-        return resolve_command_session_grant(self.workspace, argv)
+        executor = self.tools.command_executor
+        return resolve_command_session_grant(
+            self.workspace,
+            argv,
+            sandboxed=bool(getattr(executor, "sandboxed", False)),
+            rules=tuple(getattr(executor, "command_rules", ())),
+        )
 
     def _command_session_executable(self, tool_call: NormalizedToolCall) -> str | None:
         argv = tool_call.arguments.get("argv")

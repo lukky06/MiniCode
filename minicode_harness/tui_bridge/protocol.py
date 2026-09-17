@@ -50,6 +50,13 @@ class ContextEvent(_ProtocolMessage):
     reserved_output: int = Field(ge=0)
 
 
+class ContextCompactionEvent(_ProtocolMessage):
+    type: Literal["context_compaction"] = "context_compaction"
+    kind: Literal["semantic"] = "semantic"
+    phase: Literal["started", "completed", "failed"]
+    duration_ms: int | None = Field(default=None, ge=0)
+
+
 class ToolStarted(_ProtocolMessage):
     type: Literal["tool_started"] = "tool_started"
     id: str
@@ -169,6 +176,7 @@ ServerMessage: TypeAlias = Annotated[
     | SessionSettingsEvent
     | RunStarted
     | ContextEvent
+    | ContextCompactionEvent
     | ToolStarted
     | ToolFinished
     | AssistantDelta

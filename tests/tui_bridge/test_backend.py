@@ -350,6 +350,31 @@ def test_built_backend_sandbox_command_changes_next_run_defaults(tmp_path: Path)
     assert updated.sandbox_image is None
 
 
+def test_built_backend_applies_command_rules_from_tui_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace-command-rules"
+    workspace.mkdir()
+    monkeypatch.setenv(
+        "MINICODE_TUI_COMMAND_RULES",
+        '[{"decision":"ask","prefix":["npm","install"]}]',
+    )
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    args = _build_parser().parse_args(
+        ["--workspace", str(workspace), "--provider", "test"]
+    )
+
+    backend = _build_backend(args, output_sink=sink)
+    request = backend.request_factory("check rules")
+    backend.close(timeout=1.0)
+
+    assert len(request.command_rules) == 1
+    assert request.command_rules[0].decision.value == "ask"
+    assert request.command_rules[0].prefix == ("npm", "install")
+
+
 def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace-picker"
     workspace.mkdir()
@@ -546,6 +571,81 @@ def test_plan_command_changes_collaboration_mode_for_next_run(tmp_path: Path) ->
     assert executor.started.wait(1.0)
     assert executor.request is not None
     assert executor.request.collaboration_mode == CollaborationMode.PLAN
+
+    executor.release.set()
+    backend.close(timeout=1.0)
+
+
+def test_unconfigured_docker_blocks_task_until_session_switches_to_local(
+    tmp_path: Path,
+) -> None:
+    executor = BlockingExecutor()
+    stream = StringIO()
+    sink = JsonlOutputSink(JsonlEventWriter(stream))
+    settings = TerminalSessionSettings(
+        sandbox_mode=SandboxMode.DOCKER,
+        sandbox_image=None,
+    )
+    backend = JsonlBackend(
+        session_id="session_1",
+        executor=executor,
+        output_sink=sink,
+        approval_client=StaticApprovalClient(),
+        request_factory=lambda task: RunExecutionRequest(
+            task=task,
+            workspace=tmp_path,
+            sandbox_mode=settings.sandbox_mode,
+            sandbox_image=(
+                settings.sandbox_image
+                if settings.sandbox_mode == SandboxMode.DOCKER
+                else None
+            ),
+        ),
+        command_router=SlashCommandRouter(),
+        command_context=TerminalContext(
+            workspace=tmp_path,
+            provider="test",
+            model=None,
+            write_enabled=True,
+            repository_memory_enabled=True,
+            subagents_enabled=True,
+            mcp_config=None,
+            output_sink=NullOutputSink(),
+            approval_client=StaticApprovalClient(),
+            run_store=RunStore(tmp_path / "runs"),
+            sandbox_mode=SandboxMode.DOCKER,
+            sandbox_image=None,
+            session_settings=settings,
+        ),
+    )
+
+    backend.handle_message(TaskMessage(text="inspect repository"))
+    _wait_for_event_type(stream, "error")
+    error = next(
+        event
+        for event in (
+            parse_server_message(line) for line in stream.getvalue().splitlines()
+        )
+        if event.type == "error"
+    )
+
+    assert "Docker command sandbox has no image configured" in error.message
+    assert "/sandbox docker <image>" in error.message
+    assert "/sandbox local" in error.message
+    assert not executor.started.is_set()
+    deadline = time.monotonic() + 1.0
+    while backend.is_active and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert backend.is_active is False
+
+    backend.handle_message(CommandMessage(text="/sandbox local"))
+    _wait_for_event_type(stream, "panel")
+    backend.handle_message(TaskMessage(text="inspect repository locally"))
+
+    assert executor.started.wait(1.0)
+    assert executor.request is not None
+    assert executor.request.sandbox_mode == SandboxMode.LOCAL
+    assert executor.request.sandbox_image is None
 
     executor.release.set()
     backend.close(timeout=1.0)

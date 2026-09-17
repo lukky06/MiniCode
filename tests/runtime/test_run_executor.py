@@ -62,10 +62,26 @@ def test_run_executor_compacts_active_session_and_preserves_latest_turn(
         lambda **kwargs: FakeModelClient(),
     )
 
+    compaction_events: list[tuple[str, int | None, bool | None]] = []
+
+    class RecordingSink(NullOutputSink):
+        def context_compaction_started(self, *, kind: str) -> None:
+            compaction_events.append((kind, None, None))
+
+        def context_compaction_finished(
+            self,
+            *,
+            kind: str,
+            duration_ms: int,
+            success: bool,
+        ) -> None:
+            compaction_events.append((kind, duration_ms, success))
+
     result = RunExecutor(session_memory=session_memory).compact_session(
         provider="deepseek",
         model="deepseek-chat",
         focus="保留架构约束和验证边界",
+        output_sink=RecordingSink(),
     )
 
     canonical = session_memory.load_message_history()
@@ -80,6 +96,10 @@ def test_run_executor_compacts_active_session_and_preserves_latest_turn(
     assert state.semantic.summary.startswith(SEMANTIC_HISTORY_HEADING)
     payload = json.loads(str(requests[0].messages[0]["content"]))
     assert payload["manual_focus"] == "保留架构约束和验证边界"
+    assert compaction_events[0] == ("semantic", None, None)
+    assert compaction_events[1][0] == "semantic"
+    assert compaction_events[1][1] is not None
+    assert compaction_events[1][2] is True
 
 
 def test_run_executor_review_uses_review_skill_and_readonly_subagent(
@@ -379,6 +399,26 @@ def test_run_executor_owns_recall_loop_persistence_and_finalization(tmp_path, mo
     assert "run_started" in trace
     assert session_memory.session_id in trace
     assert "run_finished" in trace
+
+
+def test_run_executor_persists_worktree_worker_setting(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs")
+
+    result = RunExecutor(run_store=run_store).execute(
+        RunExecutionRequest(
+            task="noop",
+            workspace=workspace,
+            dry_run=True,
+            worktree_workers_enabled=False,
+        ),
+        output_sink=NullOutputSink(),
+        approval_client=StaticApprovalClient(),
+    )
+
+    session = run_store.load_session(result.run_id)
+    assert session.worktree_workers_enabled is False
 
 
 def test_run_executor_exposes_stop_summary_without_persisting_it_as_model_text(

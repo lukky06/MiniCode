@@ -855,7 +855,17 @@ class ToolRegistry:
                     and tasks[0].get("status") == "running"
                 )
         if name == "run_command":
-            command_policy = check_command_allowed(list(normalized["argv"]))
+            argv = list(normalized["argv"])
+            classify = getattr(self.command_executor, "classify", None)
+            command_policy = (
+                classify(argv)
+                if callable(classify)
+                else check_command_allowed(
+                    argv,
+                    sandboxed=bool(getattr(self.command_executor, "sandboxed", False)),
+                    rules=tuple(getattr(self.command_executor, "command_rules", ())),
+                )
+            )
             risk_level = command_policy.risk_level
             requires_approval = command_policy.requires_approval
         return ToolAdmission(

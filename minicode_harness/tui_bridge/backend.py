@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stdout
 from dataclasses import replace
+import json
+import os
 from pathlib import Path
 import sys
 from threading import Lock, Thread
 from typing import Callable, TextIO
 
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ApprovalPolicy, CommandRule, PermissionMode
 from minicode_harness.runtime import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.run_executor import (
@@ -197,6 +199,17 @@ class JsonlBackend:
             if self.user_input_client is not None:
                 kwargs["user_input_client"] = self.user_input_client
             request = self.request_factory(task)
+            if (
+                request.sandbox_mode == SandboxMode.DOCKER
+                and not request.sandbox_image
+                and not request.dry_run
+            ):
+                self.output_sink.error(
+                    "Docker command sandbox has no image configured. "
+                    "Use /sandbox docker <image> to configure one, or /sandbox local "
+                    "to use the host for subsequent Runs."
+                )
+                return
             result = self.executor.execute(request, **kwargs)
             session_settings = (
                 self.command_context.session_settings
@@ -448,6 +461,7 @@ def _build_backend(
     executor = RunExecutor(run_store=run_store, session_memory=session)
     approval_client = JsonlApprovalClient(output_sink)
     user_input_client = JsonlUserInputClient(output_sink)
+    command_rules = _command_rules_from_environment()
     session_settings = TerminalSessionSettings(
         collaboration_mode=CollaborationMode(args.mode),
         permission_mode=PermissionMode(args.permission_mode),
@@ -471,6 +485,7 @@ def _build_backend(
                 if session_settings.sandbox_mode == SandboxMode.DOCKER
                 else None
             ),
+            command_rules=command_rules,
             collaboration_mode=session_settings.collaboration_mode,
             skills=args.skill,
             skills_enabled=not args.no_skills,
@@ -511,6 +526,19 @@ def _build_backend(
         command_router=SlashCommandRouter(),
         command_context=command_context,
     )
+
+
+def _command_rules_from_environment() -> list[CommandRule]:
+    raw = os.environ.get("MINICODE_TUI_COMMAND_RULES")
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid MINICODE_TUI_COMMAND_RULES JSON: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ValueError("MINICODE_TUI_COMMAND_RULES must be a JSON array.")
+    return [CommandRule.model_validate(item) for item in payload]
 
 
 def main(argv: list[str] | None = None) -> int:

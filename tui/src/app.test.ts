@@ -124,6 +124,33 @@ test("T7 product UI exposes project hierarchy, run status, and tool timeline", (
   assert.match(stripTerminalSequences(app.footer.render(96).join("\n")), /completed/);
 });
 
+test("semantic context compaction is visible in the footer", () => {
+  const terminal = new FakeTerminal(96, 20);
+  const app = new MiniCodeTuiApp({ terminal });
+
+  app.handleServerEvent({ type: "run_started", run_id: "run_compact" });
+  app.handleServerEvent({
+    type: "context_compaction",
+    kind: "semantic",
+    phase: "started",
+    duration_ms: null,
+  });
+  assert.match(
+    stripTerminalSequences(app.footer.render(96).join("\n")),
+    /Compacting context/,
+  );
+
+  app.handleServerEvent({
+    type: "context_compaction",
+    kind: "semantic",
+    phase: "completed",
+    duration_ms: 245,
+  });
+  const completed = stripTerminalSequences(app.footer.render(96).join("\n"));
+  assert.match(completed, /Working/);
+  assert.match(completed, /context compacted · 245ms/);
+});
+
 test("session settings stay visible in the footer", () => {
   const terminal = new FakeTerminal(96, 20);
   const app = new MiniCodeTuiApp({ terminal });

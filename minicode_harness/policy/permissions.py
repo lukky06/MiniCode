@@ -57,18 +57,15 @@ def decide_permission(
     ):
         return PermissionDecision.ALLOW
 
-    if permission_mode == PermissionMode.FULL_ACCESS:
-        if approval_policy == ApprovalPolicy.NEVER:
-            return PermissionDecision.ALLOW
-        if not is_command:
-            return PermissionDecision.ALLOW
-
     if is_command:
         return (
             PermissionDecision.ASK
             if approval_policy == ApprovalPolicy.ON_REQUEST
             else PermissionDecision.DENY
         )
+
+    if permission_mode == PermissionMode.FULL_ACCESS:
+        return PermissionDecision.ALLOW
 
     return (
         PermissionDecision.ASK

@@ -7,6 +7,7 @@ from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCa
 import minicode_harness.resume as resume_module
 from minicode_harness.resume import latest_recoverable_run_id, resume_run
 from minicode_harness.runtime.steering import SteeringQueue
+from minicode_harness.tools import CommandRunResult
 from minicode_harness.state import (
     ApprovalDecision,
     ApprovalRequest,
@@ -85,6 +86,36 @@ class ScriptedModelClient(ModelClient):
     def call_request(self, request):
         self.requests.append(list(request.as_chat_messages()))
         return self.responses.pop(0)
+
+
+class RecordingSandboxCommandExecutor:
+    sandboxed = True
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def execute(
+        self,
+        workspace,
+        argv,
+        timeout_seconds,
+        cancellation_token=None,
+        *,
+        approval_granted: bool = False,
+    ) -> CommandRunResult:
+        del workspace, cancellation_token, approval_granted
+        normalized = list(argv)
+        self.calls.append(normalized)
+        return CommandRunResult(
+            argv=normalized,
+            command=" ".join(normalized),
+            returncode=0,
+            stdout="sandboxed\n",
+            stderr="",
+            duration_seconds=0.01,
+            timeout_seconds=timeout_seconds,
+            allowlist_rule="sandbox default",
+        )
 
 
 def test_resume_blocks_when_modified_file_digest_changed(tmp_path) -> None:
@@ -193,9 +224,11 @@ def test_resume_restores_persisted_command_sandbox(tmp_path, monkeypatch) -> Non
         def execute(self, *args, **kwargs):
             raise AssertionError("No command should execute in this test")
 
-    def fake_create(mode, *, image=None):
+    def fake_create(mode, *, image=None, command_rules=(), workspace_writable=True):
         captured["mode"] = str(mode)
         captured["image"] = image
+        captured["command_rules"] = list(command_rules)
+        captured["workspace_writable"] = workspace_writable
         return FakeExecutor()
 
     monkeypatch.setattr(resume_module, "create_command_executor", fake_create)
@@ -214,7 +247,12 @@ def test_resume_restores_persisted_command_sandbox(tmp_path, monkeypatch) -> Non
     )
 
     assert result.status == "completed"
-    assert captured == {"mode": "docker", "image": "python:3.11-slim"}
+    assert captured == {
+        "mode": "docker",
+        "image": "python:3.11-slim",
+        "command_rules": [],
+        "workspace_writable": False,
+    }
 
 
 def test_resume_restores_task_state_for_task_list(tmp_path) -> None:
@@ -318,6 +356,8 @@ def test_resume_restores_pending_approval_and_continues(tmp_path) -> None:
     assert latest is not None
     assert latest.modified_files == ["README.md"]
     assert latest.run_state.verification.status == "not_run"
+    journal = resume_module.ExecutionJournal(run_path / "execution-journal.jsonl")
+    assert [event.event for event in journal.load_events()] == ["PREPARED", "COMPLETED"]
     payload = json.loads(
         (run_path / "checkpoints" / "latest.json").read_text(encoding="utf-8")
     )
@@ -326,6 +366,58 @@ def test_resume_restores_pending_approval_and_continues(tmp_path) -> None:
     assert "approval_restored" in [event["type"] for event in events]
     assert "run_state_updated" in [event["type"] for event in events]
     assert "task_memory_updated" not in [event["type"] for event in events]
+
+
+def test_resume_pending_command_uses_original_sandbox_executor_and_journal(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs")
+    session = run_store.create_run(
+        task="run pending sandbox command",
+        workspace=workspace,
+        run_id="run_20260916_001",
+        no_write=False,
+        repository_memory_enabled=False,
+        sandbox_mode="docker",
+        sandbox_image="minicode-test-image",
+    )
+    run_path = run_store.path_for(session.run_id)
+    ApprovalStore(run_path / "approvals").save_pending(
+        ApprovalRequest(
+            id="step_0001_call_1",
+            tool_call_id="call_1",
+            tool_name="run_command",
+            risk_level="medium",
+            step=1,
+            arguments={
+                "argv": ["definitely-not-real-minicode-command"],
+                "timeout_seconds": 30,
+            },
+            preview={"summary": "Run sandboxed command"},
+        )
+    )
+    executor = RecordingSandboxCommandExecutor()
+    monkeypatch.setattr(
+        resume_module,
+        "create_command_executor",
+        lambda *args, **kwargs: executor,
+    )
+
+    result = resume_run(
+        session.run_id,
+        run_store=run_store,
+        model_client=ScriptedModelClient([ModelResponse(final_text="resumed")]),
+        approval_client=StaticApprovalClient(ApprovalDecision.APPROVE),
+        memory_store=ProjectMemoryStore(tmp_path / "memory"),
+    )
+
+    assert result.status == "completed"
+    assert executor.calls == [["definitely-not-real-minicode-command"]]
+    journal = resume_module.ExecutionJournal(run_path / "execution-journal.jsonl")
+    assert [event.event for event in journal.load_events()] == ["PREPARED", "COMPLETED"]
 
 
 def test_resume_can_persist_session_command_grant_for_restored_approval(tmp_path) -> None:

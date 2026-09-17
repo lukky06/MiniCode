@@ -230,6 +230,7 @@ def test_command_journal_keeps_only_bounded_execution_facts(tmp_path) -> None:
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
         no_skills=True,
+        approval_client=StaticApprovalClient(ApprovalDecision.APPROVE),
         command_executor=RecordingCommandExecutor(),
     )
 
@@ -240,7 +241,7 @@ def test_command_journal_keeps_only_bounded_execution_facts(tmp_path) -> None:
     events = journal.load_events()
     assert [event.event for event in events] == ["PREPARED", "COMPLETED"]
     assert events[0].effect_kind == "command"
-    assert events[0].command_category == "verification"
+    assert events[0].command_category == "unknown"
     assert events[1].result_status == "completed"
     assert events[1].returncode == 0
     assert "secret command output" not in journal.path.read_text(encoding="utf-8")

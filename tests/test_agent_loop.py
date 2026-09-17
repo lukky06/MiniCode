@@ -70,6 +70,68 @@ def _prepend_current_python_to_path(monkeypatch) -> None:
     monkeypatch.setenv("PATH", python_dir + os.pathsep + current)
 
 
+def test_tool_runtime_execute_uses_prepare_execute_finalize_phases(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    loop = AgentLoop(
+        task="Inspect runtime pipeline",
+        workspace=workspace,
+        model_client=ScriptedModelClient([ModelResponse(final_text="done")]),
+        trace_writer=TraceWriter(tmp_path / "run" / "trace.jsonl"),
+        memory_store=ProjectMemoryStore(tmp_path / "memory"),
+        no_skills=True,
+    )
+    tool_call = NormalizedToolCall(
+        id="call_read",
+        name="read",
+        arguments={"source": "workspace", "target": "README.md"},
+    )
+    prepared = object()
+    raw_result = object()
+    expected = loop.tool_runtime._unavailable_tool_outcome(1, tool_call, ())
+    phases: list[str] = []
+
+    def prepare_tool_call(**kwargs):
+        assert kwargs["tool_call"] is tool_call
+        phases.append("prepare")
+        return prepared
+
+    def execute_prepared_tool(**kwargs):
+        assert kwargs["prepared"] is prepared
+        phases.append("execute")
+        return raw_result
+
+    def finalize_tool_result(**kwargs):
+        assert kwargs["prepared"] is prepared
+        assert kwargs["result"] is raw_result
+        phases.append("finalize")
+        return expected
+
+    monkeypatch.setattr(loop.tool_runtime, "_prepare_tool_call", prepare_tool_call, raising=False)
+    monkeypatch.setattr(
+        loop.tool_runtime,
+        "_execute_prepared_tool",
+        execute_prepared_tool,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        loop.tool_runtime,
+        "_finalize_tool_result",
+        finalize_tool_result,
+        raising=False,
+    )
+
+    outcome = loop.tool_runtime.execute(
+        step=1,
+        tool_call=tool_call,
+        available_tool_names=("read",),
+        workspace_generation=loop.workspace_generation,
+    )
+
+    assert outcome is expected
+    assert phases == ["prepare", "execute", "finalize"]
+
+
 def test_runtime_resource_closers_keep_shared_registry_as_final_task_boundary(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

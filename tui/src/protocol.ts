@@ -24,6 +24,12 @@ export type ServerMessage =
       reserved_output: number;
     }
   | {
+      type: "context_compaction";
+      kind: "semantic";
+      phase: "started" | "completed" | "failed";
+      duration_ms?: number | null;
+    }
+  | {
       type: "tool_started";
       id: string;
       step: number;
@@ -98,6 +104,7 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "session_settings",
   "run_started",
   "context",
+  "context_compaction",
   "tool_started",
   "tool_finished",
   "assistant_delta",
@@ -189,6 +196,16 @@ function validateRequiredFields(value: Record<string, unknown>): void {
       requirePositive(value, "window");
       requirePositive(value, "prompt_budget");
       requireNonNegative(value, "reserved_output");
+      return;
+    case "context_compaction":
+      exactKeys(value, ["type", "kind", "phase", "duration_ms"]);
+      if (value.kind !== "semantic") {
+        throw new Error("Expected semantic context compaction kind");
+      }
+      if (!["started", "completed", "failed"].includes(String(value.phase))) {
+        throw new Error("Expected context compaction phase");
+      }
+      requireOptionalNonNegativeInteger(value, "duration_ms");
       return;
     case "tool_started":
       exactKeys(value, ["type", "id", "step", "tool", "target"]);

@@ -11,6 +11,8 @@ import subprocess
 import sys
 from typing import Mapping, Sequence
 
+from minicode_harness.policy import CommandRule
+
 _MIN_NODE_VERSION = (22, 19, 0)
 _NODE_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
 
@@ -25,6 +27,7 @@ def launch_tui(
     permission_mode: str,
     sandbox_mode: str,
     sandbox_image: str | None,
+    command_rules: Sequence[CommandRule] = (),
     collaboration_mode: str,
     skills: Sequence[str] | None,
     skills_enabled: bool,
@@ -55,6 +58,7 @@ def launch_tui(
         permission_mode=permission_mode,
         sandbox_mode=sandbox_mode,
         sandbox_image=sandbox_image,
+        command_rules=command_rules,
         collaboration_mode=collaboration_mode,
         skills=skills,
         skills_enabled=skills_enabled,
@@ -128,6 +132,7 @@ def _build_environment(
     permission_mode: str,
     sandbox_mode: str,
     sandbox_image: str | None,
+    command_rules: Sequence[CommandRule] = (),
     collaboration_mode: str,
     skills: Sequence[str] | None,
     skills_enabled: bool,
@@ -150,6 +155,9 @@ def _build_environment(
         "MINICODE_TUI_PERMISSION_MODE": permission_mode,
         "MINICODE_TUI_SANDBOX_MODE": sandbox_mode,
         "MINICODE_TUI_SANDBOX_IMAGE": sandbox_image,
+        "MINICODE_TUI_COMMAND_RULES": json.dumps(
+            [rule.model_dump(mode="json") for rule in command_rules]
+        ),
         "MINICODE_TUI_COLLABORATION_MODE": collaboration_mode,
         "MINICODE_TUI_SKILLS": json.dumps(list(skills or [])),
         "MINICODE_TUI_MCP_CONFIG": str(mcp_config) if mcp_config else None,

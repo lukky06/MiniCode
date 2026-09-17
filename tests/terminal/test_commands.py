@@ -284,19 +284,18 @@ def test_router_runs_manual_compaction_with_focus(tmp_path) -> None:
                 reason="semantic",
             )
 
+    context = _context(tmp_path, executor=FakeExecutor())
     result = SlashCommandRouter().execute(
         parse_slash_command('/compact "保留当前重构约束" "以及失败测试"'),
-        _context(tmp_path, executor=FakeExecutor()),
+        context,
     )
 
     assert result.status == "completed"
-    assert calls == [
-        {
-            "provider": "qwen",
-            "model": "qwen-plus",
-            "focus": "保留当前重构约束 以及失败测试",
-        }
-    ]
+    assert len(calls) == 1
+    assert calls[0]["provider"] == "qwen"
+    assert calls[0]["model"] == "qwen-plus"
+    assert calls[0]["focus"] == "保留当前重构约束 以及失败测试"
+    assert calls[0]["output_sink"] is context.output_sink
     assert "4000 -> 1200 tokens" in (result.content or "")
     assert "removed groups: 8" in (result.content or "")
 

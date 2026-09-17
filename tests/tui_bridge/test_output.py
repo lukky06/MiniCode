@@ -68,6 +68,31 @@ def test_jsonl_output_sink_emits_existing_runtime_callbacks_in_order() -> None:
     assert json.loads(lines[6])["text"] == "完成\n"
 
 
+def test_jsonl_output_sink_emits_context_compaction_lifecycle() -> None:
+    sink, stream = _sink()
+
+    sink.context_compaction_started(kind="semantic")
+    sink.context_compaction_finished(
+        kind="semantic",
+        duration_ms=245,
+        success=True,
+    )
+
+    events = [
+        parse_server_message(line)
+        for line in stream.getvalue().splitlines()
+    ]
+    assert [event.type for event in events] == [
+        "context_compaction",
+        "context_compaction",
+    ]
+    assert events[0].phase == "started"
+    assert events[0].kind == "semantic"
+    assert events[0].duration_ms is None
+    assert events[1].phase == "completed"
+    assert events[1].duration_ms == 245
+
+
 def test_jsonl_output_sink_bounds_activity_text_but_preserves_assistant_delta() -> None:
     sink, stream = _sink()
     long_target = "x" * 500

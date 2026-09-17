@@ -85,7 +85,7 @@ class SweBenchDockerCommandExecutor:
 
         if timeout_seconds < 1:
             raise ValueError("timeout_seconds must be at least 1")
-        policy_result = check_command_allowed(argv)
+        policy_result = check_command_allowed(argv, sandboxed=True)
         if not policy_result.allowed:
             raise PermissionError(policy_result.reason or "Command is not allowed")
         if policy_result.requires_approval and not approval_granted:

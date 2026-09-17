@@ -111,7 +111,17 @@ permission_mode = "workspace-write"
 approval_policy = "on-request"
 sandbox = "docker"
 sandbox_image = "your-dev-image:latest"
+
+[[command_rules]]
+decision = "ask"
+prefix = ["npm", "install"]
+
+[[command_rules]]
+decision = "deny"
+prefix = ["git", "push"]
 ```
+
+`run_command` 采用 Sandbox-first 策略：Docker 沙箱内未命中显式规则的普通开发命令可直接执行，本地宿主执行默认进入审批。交互 TUI 允许在 Docker 镜像尚未配置时先启动，首次任务会提示通过 `/sandbox docker <image>` 或 `/sandbox local` 完成后续 Run 的执行环境选择；`minicode exec` 仍要求 Docker 镜像提前配置。`command_rules` 只按 argv token 前缀匹配 `allow / ask / deny`，不维护 Python、npm、Maven 等工具级白名单；Hard Safety 边界始终优先，不能被 `allow` 或审批绕过。
 
 ## 开发
 

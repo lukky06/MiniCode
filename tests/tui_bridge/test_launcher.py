@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from minicode_harness.policy import CommandRule, CommandRuleDecision
 from minicode_harness.tui_bridge import launcher
 
 
@@ -51,6 +52,12 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
         collaboration_mode="plan",
         sandbox_mode="docker",
         sandbox_image="python:3.11-slim",
+        command_rules=[
+            CommandRule(
+                decision=CommandRuleDecision.ASK,
+                prefix=("npm", "install"),
+            )
+        ],
         skills=["reviewer", "handoff"],
         skills_enabled=True,
         repository_memory_enabled=False,
@@ -71,6 +78,7 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
     assert env["MINICODE_TUI_COLLABORATION_MODE"] == "plan"
     assert env["MINICODE_TUI_SANDBOX_MODE"] == "docker"
     assert env["MINICODE_TUI_SANDBOX_IMAGE"] == "python:3.11-slim"
+    assert env["MINICODE_TUI_COMMAND_RULES"] == '[{"decision": "ask", "prefix": ["npm", "install"]}]'
     assert env["MINICODE_TUI_SKILLS"] == '["reviewer", "handoff"]'
     assert env["MINICODE_TUI_NO_WRITE"] == "1"
     assert env["MINICODE_TUI_NO_REPOSITORY_MEMORY"] == "1"

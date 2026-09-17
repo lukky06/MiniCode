@@ -261,6 +261,7 @@ class SlashCommandRouter:
                 provider=context.provider,
                 model=context.model,
                 focus=" ".join(command.arguments),
+                output_sink=context.output_sink,
             )
             if not result.changed:
                 return CommandResult(

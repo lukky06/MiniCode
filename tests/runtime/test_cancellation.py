@@ -148,6 +148,7 @@ def test_run_command_terminates_process_when_cancelled(tmp_path, monkeypatch) ->
         tmp_path,
         ["python", "-m", "pytest", "-q"],
         cancellation_token=token,
+        approval_granted=True,
     )
 
     assert result.cancelled is True

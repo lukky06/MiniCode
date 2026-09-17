@@ -223,6 +223,23 @@ export class MiniCodeTuiApp {
       case "context":
         this.footer.setContext(event.used, event.prompt_budget);
         break;
+      case "context_compaction":
+        if (event.phase === "started") {
+          this.footer.setStatus("Compacting context", "working");
+        } else if (event.phase === "completed") {
+          this.footer.setStatus(
+            "Working",
+            "working",
+            `context compacted · ${event.duration_ms ?? 0}ms`,
+          );
+        } else {
+          this.footer.setStatus(
+            "Working",
+            "working",
+            `context compaction fallback · ${event.duration_ms ?? 0}ms`,
+          );
+        }
+        break;
       case "tool_started": {
         const trackElapsed = event.tool === "run_command";
         this.transcript.startTool(

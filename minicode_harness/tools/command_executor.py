@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 import re
@@ -12,7 +13,12 @@ from typing import Protocol
 import unicodedata
 
 from minicode_harness.runtime.cancellation import CancellationToken
-from minicode_harness.policy import check_command_allowed, render_argv
+from minicode_harness.policy import (
+    CommandPolicyResult,
+    CommandRule,
+    check_command_allowed,
+    render_argv,
+)
 
 from .write_tools import (
     CommandRunResult,
@@ -41,6 +47,10 @@ class CommandExecutor(Protocol):
     """Execute one command already admitted by policy and approval."""
 
     sandboxed: bool
+    command_rules: tuple[CommandRule, ...]
+
+    def classify(self, argv: list[str]) -> CommandPolicyResult:
+        """Classify argv against this executor's sandbox and command rules."""
 
     def execute(
         self,
@@ -58,15 +68,21 @@ def create_command_executor(
     mode: SandboxMode | str = SandboxMode.LOCAL,
     *,
     image: str | None = None,
+    command_rules: Sequence[CommandRule] = (),
+    workspace_writable: bool = True,
 ) -> CommandExecutor:
     """Create the selected command execution environment."""
 
     resolved = SandboxMode(mode)
     if resolved == SandboxMode.LOCAL:
-        return LocalCommandExecutor()
+        return LocalCommandExecutor(command_rules=command_rules)
     if not image:
         raise ValueError("Docker sandbox requires an image.")
-    executor = DockerCommandExecutor(image=image)
+    executor = DockerCommandExecutor(
+        image=image,
+        command_rules=command_rules,
+        workspace_writable=workspace_writable,
+    )
     _validate_docker_runtime(
         docker_binary=executor.docker_binary,
         image=executor.image,
@@ -75,9 +91,15 @@ def create_command_executor(
 
 
 class LocalCommandExecutor:
-    """Default executor for policy-approved local workspace commands."""
+    """Host executor; ordinary commands require approval unless a rule allows them."""
 
     sandboxed = False
+
+    def __init__(self, *, command_rules: Sequence[CommandRule] = ()) -> None:
+        self.command_rules = tuple(command_rules)
+
+    def classify(self, argv: list[str]) -> CommandPolicyResult:
+        return check_command_allowed(argv, sandboxed=False, rules=self.command_rules)
 
     def execute(
         self,
@@ -94,6 +116,7 @@ class LocalCommandExecutor:
             timeout_seconds=timeout_seconds,
             cancellation_token=cancellation_token,
             approval_granted=approval_granted,
+            command_rules=self.command_rules,
         )
 
 
@@ -107,7 +130,14 @@ class DockerCommandExecutor:
 
     sandboxed = True
 
-    def __init__(self, *, image: str, docker_binary: str = "docker") -> None:
+    def __init__(
+        self,
+        *,
+        image: str,
+        docker_binary: str = "docker",
+        command_rules: Sequence[CommandRule] = (),
+        workspace_writable: bool = True,
+    ) -> None:
         if not image:
             raise ValueError("Docker image must not be empty")
         if image != image.strip():
@@ -127,6 +157,11 @@ class DockerCommandExecutor:
             raise ValueError("Docker executable must not contain whitespace or control characters")
         self.image = image
         self.docker_binary = docker_binary
+        self.command_rules = tuple(command_rules)
+        self.workspace_writable = workspace_writable
+
+    def classify(self, argv: list[str]) -> CommandPolicyResult:
+        return check_command_allowed(argv, sandboxed=True, rules=self.command_rules)
 
     def execute(
         self,
@@ -145,7 +180,7 @@ class DockerCommandExecutor:
         # Re-check both gates at the execution boundary.  ToolRegistry already
         # performs admission, but this executor must remain safe when called
         # directly or through another runtime integration.
-        policy_result = check_command_allowed(argv)
+        policy_result = self.classify(argv)
         if not policy_result.allowed:
             raise PermissionError(policy_result.reason or "Command is not allowed")
         if policy_result.requires_approval and not approval_granted:
@@ -159,6 +194,10 @@ class DockerCommandExecutor:
 
         with TemporaryDirectory(prefix="minicode-docker-") as temp_dir:
             cidfile = Path(temp_dir) / "container.cid"
+            workspace_mount = (
+                f"type=bind,source={root},target={_CONTAINER_WORKSPACE}"
+                + ("" if self.workspace_writable else ",readonly")
+            )
             docker_argv = [
                 self.docker_binary,
                 "run",
@@ -177,7 +216,7 @@ class DockerCommandExecutor:
                 "--tmpfs",
                 _CONTAINER_TMPFS,
                 "--mount",
-                f"type=bind,source={root},target={_CONTAINER_WORKSPACE}",
+                workspace_mount,
                 "--workdir",
                 _CONTAINER_WORKSPACE,
                 "--entrypoint",

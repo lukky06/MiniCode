@@ -58,9 +58,19 @@ permission_mode = "workspace-write"
 approval_policy = "on-request"
 sandbox = "docker"
 sandbox_image = "your-dev-image:latest"
+
+[[command_rules]]
+decision = "ask"
+prefix = ["npm", "install"]
+
+[[command_rules]]
+decision = "deny"
+prefix = ["git", "push"]
 ```
 
-命令行显式参数优先于用户配置。`run_command` 默认进入 Docker；Docker Desktop/daemon 或镜像不可用时会明确失败，不会自动退回宿主机执行。需要本地执行时显式使用 `--sandbox local`，交互 Session 中也可以用 `/sandbox local` 修改后续 Run。
+命令行显式参数优先于用户配置。`run_command` 默认进入 Docker，且不会自动退回宿主机执行。`minicode exec` 在 Docker 镜像未配置时直接失败；交互 TUI 可以先正常启动，若首次任务仍未配置镜像，会在创建 Run 和调用模型前提示使用 `/sandbox docker <image>` 配置镜像，或使用 `/sandbox local` 将后续 Run 切到宿主机。Docker Desktop/daemon 或已配置镜像实际不可用时仍会明确失败。
+
+命令策略以 Sandbox 为主要执行边界。Docker 沙箱内未命中显式规则的普通开发命令默认直接运行；`--sandbox local` 下未命中规则的命令默认进入审批。`command_rules` 使用 argv token 前缀匹配，支持 `allow`、`ask`、`deny`，同一 decision 下优先匹配更长前缀，决策优先级固定为 `deny > ask > allow`。这些规则只描述用户策略，不需要 MiniCode 识别具体语言或构建工具；Hard Safety 检查始终先执行。
 
 ## 4. 启动交互 Session
 
@@ -195,7 +205,7 @@ never
 /permissions
 ```
 
-Workspace 边界、敏感路径和危险命令策略始终生效。
+Workspace 边界、敏感路径和 Hard Safety 策略始终生效。对 `run_command` 而言，Docker 中普通命令优先依赖沙箱隔离，本地宿主命令默认审批；显式 `ask` 可以要求 Docker 内仍审批，显式 `deny` 会在审批前直接拒绝。`read-only` 模式下 Docker 会把 `/workspace` 以只读方式挂载，写能力模式才使用读写挂载。Session 级命令授权只用于需要审批的非沙箱命令，不会放宽 Hard Safety 或 `command_rules`。
 
 ## 9. Plan Mode
 

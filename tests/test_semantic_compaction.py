@@ -222,6 +222,43 @@ def test_llm_compactor_retains_explicit_focused_verification_policy() -> None:
     assert item.source_turn_ids == ["t0001"]
 
 
+def test_llm_compactor_emits_started_and_completed_events() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    client = RecordingModelClient(
+        ModelResponse(final_text=json.dumps({"items": []}))
+    )
+    compactor = LLMSemanticHistoryCompactor(
+        client,
+        event_handler=lambda event_type, payload: events.append(
+            (event_type, dict(payload))
+        ),
+    )
+    groups = group_messages(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "后续只运行 python -m pytest -q tests/focused.py，"
+                    "不要运行全量测试。"
+                ),
+            }
+        ]
+    )
+
+    compactor.compact(
+        groups,
+        compressible_group_indexes={0},
+        max_output_tokens=800,
+    )
+
+    assert [event_type for event_type, _ in events] == [
+        "semantic_compaction_started",
+        "semantic_compaction_completed",
+    ]
+    assert events[0][1]["source_group_count"] == 1
+    assert events[1][1]["duration_ms"] >= 0
+
+
 def test_llm_compactor_uses_latest_explicit_verification_policy() -> None:
     client = RecordingModelClient(
         ModelResponse(

@@ -24,6 +24,32 @@ class ContextUsage:
         return max(self.prompt_budget - self.token_estimate, 0)
 
 
+def emit_semantic_compaction_event(
+    output_sink: Any,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Forward one semantic-compaction lifecycle event to presentation sinks."""
+
+    if event_type == "semantic_compaction_started":
+        handler = getattr(output_sink, "context_compaction_started", None)
+        if callable(handler):
+            handler(kind="semantic")
+        return
+    if event_type not in {
+        "semantic_compaction_completed",
+        "semantic_compaction_failed",
+    }:
+        return
+    handler = getattr(output_sink, "context_compaction_finished", None)
+    if callable(handler):
+        handler(
+            kind="semantic",
+            duration_ms=max(0, int(payload.get("duration_ms") or 0)),
+            success=event_type == "semantic_compaction_completed",
+        )
+
+
 class StreamHandler(Protocol):
     """Receives incremental model output deltas."""
 
@@ -42,6 +68,18 @@ class OutputSink(StreamHandler, Protocol):
 
     def context_built(self, *, usage: ContextUsage) -> None:
         """Called after prompt context is built for one model step."""
+
+    def context_compaction_started(self, *, kind: str) -> None:
+        """Called immediately before one visible context compaction begins."""
+
+    def context_compaction_finished(
+        self,
+        *,
+        kind: str,
+        duration_ms: int,
+        success: bool,
+    ) -> None:
+        """Called when one visible context compaction attempt finishes."""
 
     def tool_call_started(
         self,
@@ -70,6 +108,18 @@ class NullOutputSink:
     """No-op output sink for tests, benchmarks, and embedded callers."""
 
     def context_built(self, *, usage: ContextUsage) -> None:
+        pass
+
+    def context_compaction_started(self, *, kind: str) -> None:
+        pass
+
+    def context_compaction_finished(
+        self,
+        *,
+        kind: str,
+        duration_ms: int,
+        success: bool,
+    ) -> None:
         pass
 
     def model_stream_started(self) -> None:
@@ -206,6 +256,21 @@ class TextOutputSink:
         self._write_line(
             f"[context] built in {usage.build_duration_ms}ms, "
             f"tokens={usage.token_estimate}, remaining={usage.context_remaining}"
+        )
+
+    def context_compaction_started(self, *, kind: str) -> None:
+        self._write_line(f"[context] compacting {kind} history...")
+
+    def context_compaction_finished(
+        self,
+        *,
+        kind: str,
+        duration_ms: int,
+        success: bool,
+    ) -> None:
+        outcome = "completed" if success else "failed; using fallback"
+        self._write_line(
+            f"[context] {kind} compaction {outcome} in {duration_ms}ms"
         )
 
     def model_stream_started(self) -> None:

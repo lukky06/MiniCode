@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 import difflib
 import hashlib
@@ -16,7 +17,7 @@ import time
 
 from pydantic import BaseModel
 
-from minicode_harness.policy import check_command_allowed, render_argv
+from minicode_harness.policy import CommandRule, check_command_allowed, render_argv
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.workspace import WorkspaceGuard
 
@@ -371,13 +372,14 @@ def run_command(
     timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     cancellation_token: CancellationToken | None = None,
     approval_granted: bool = False,
+    command_rules: Sequence[CommandRule] = (),
 ) -> CommandRunResult:
     """Run a policy-approved command with timeout and cooperative cancellation."""
 
     if timeout_seconds < 1:
         raise ValueError("timeout_seconds must be at least 1.")
     guard = WorkspaceGuard(workspace)
-    policy_result = check_command_allowed(argv)
+    policy_result = check_command_allowed(argv, sandboxed=False, rules=command_rules)
     if not policy_result.allowed:
         raise PermissionError(policy_result.reason or "Command is not allowed.")
     if policy_result.requires_approval and not approval_granted:

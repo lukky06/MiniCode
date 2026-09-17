@@ -136,7 +136,7 @@ class RecordingCommandExecutor:
             True,
             ApprovalPolicy.NEVER,
             PermissionMode.FULL_ACCESS,
-            PermissionDecision.ALLOW,
+            PermissionDecision.DENY,
         ),
         (
             "write",
@@ -239,7 +239,7 @@ def test_read_only_never_denies_mutation_without_prompt(tmp_path) -> None:
     assert approval.requests == []
 
 
-def test_full_access_never_allows_admitted_command_without_prompt(tmp_path) -> None:
+def test_full_access_never_does_not_bypass_command_approval_requirement(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval = StaticApprovalClient(ApprovalDecision.REJECT)
@@ -281,9 +281,7 @@ def test_full_access_never_allows_admitted_command_without_prompt(tmp_path) -> N
 
     assert result.status == "completed"
     assert approval.requests == []
-    assert executor.calls == [
-        (["python", "-c", "open('diagnostic.txt', 'w').write('x')"], True)
-    ]
+    assert executor.calls == []
 
 
 def test_full_access_never_cannot_bypass_deterministic_command_deny(tmp_path) -> None:
