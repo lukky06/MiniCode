@@ -28,9 +28,6 @@ HookEventName = Literal[
     "error",
 ]
 
-HookAction = Literal["allow", "block", "replace", "request_approval"]
-
-
 class HookEvent(BaseModel):
     """One harness lifecycle event delivered to registered hooks."""
 
@@ -47,22 +44,19 @@ class HookEvent(BaseModel):
 class HookDecision(BaseModel):
     """Decision returned by a hook.
 
-    ``allow`` means execution continues. ``block`` and ``replace`` short-circuit
-    the current action with a deterministic observation. ``request_approval`` is
-    reserved for approval-oriented hooks.
+    ``allow`` continues execution; ``block`` returns a deterministic observation.
     """
 
-    action: HookAction = "allow"
+    action: Literal["allow", "block"] = "allow"
     hook_name: str = ""
     reason: str = ""
     observation: ContextObservation | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"arbitrary_types_allowed": True}
 
     @classmethod
-    def allow(cls, *, hook_name: str = "", reason: str = "") -> "HookDecision":
-        return cls(action="allow", hook_name=hook_name, reason=reason)
+    def allow(cls) -> "HookDecision":
+        return cls(action="allow")
 
     @classmethod
     def block(
@@ -71,31 +65,12 @@ class HookDecision(BaseModel):
         hook_name: str,
         reason: str,
         observation: ContextObservation,
-        payload: dict[str, Any] | None = None,
     ) -> "HookDecision":
         return cls(
             action="block",
             hook_name=hook_name,
             reason=reason,
             observation=observation,
-            payload=payload or {},
-        )
-
-    @classmethod
-    def replace(
-        cls,
-        *,
-        hook_name: str,
-        reason: str,
-        observation: ContextObservation,
-        payload: dict[str, Any] | None = None,
-    ) -> "HookDecision":
-        return cls(
-            action="replace",
-            hook_name=hook_name,
-            reason=reason,
-            observation=observation,
-            payload=payload or {},
         )
 
 

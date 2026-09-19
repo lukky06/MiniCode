@@ -22,18 +22,18 @@ class UserTurnState(BaseModel):
         *,
         turn_id: str,
         task: str,
-        messages: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]],
         model_call_count: int = 0,
         append_task: bool = True,
     ) -> "UserTurnState":
-        """Create a turn from an optional persistent conversation history.
+        """Create a turn from persistent conversation history.
 
         A fresh REPL turn appends the new user task to the existing session
         history. Resume passes ``append_task=False`` because the checkpoint
         already contains the task and its completed tool exchanges.
         """
 
-        history = deepcopy(messages or [])
+        history = deepcopy(messages)
         user_message = {"role": "user", "content": task}
         if append_task:
             history.append(deepcopy(user_message))

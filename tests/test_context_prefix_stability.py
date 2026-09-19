@@ -41,7 +41,6 @@ def _preparer() -> ContextPreparer:
             context_budget=5_000,
             reserved_output=0,
             soft_limit=0.25,
-            semantic_limit=0.90,
             hard_limit=0.95,
         ),
         policy=CompactionPolicy(current_frontier_token_limit=160),

@@ -1,6 +1,5 @@
 from pathlib import Path
 import json
-from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -238,7 +237,7 @@ def test_exec_uses_user_config_when_options_are_omitted(tmp_path, monkeypatch) -
     monkeypatch.setattr(
         cli_module,
         "_load_user_config",
-        lambda: SimpleNamespace(
+        lambda: UserConfig(
             provider="deepseek",
             model="deepseek-chat",
             permission_mode="workspace-write",

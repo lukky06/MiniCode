@@ -16,7 +16,7 @@ import re
 from typing import Callable
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from minicode_harness.context.compaction_state import SessionCompactionState
 from minicode_harness.storage import default_data_dir
@@ -38,6 +38,12 @@ class DialogueTurn(BaseModel):
     run_id: str | None = None
     history_length: int | None = Field(default=None, ge=0)
     created_at: str = Field(default_factory=_utc_now)
+
+    @model_validator(mode="after")
+    def require_completed_run_boundary(self) -> "DialogueTurn":
+        if self.role == "assistant" and self.run_id is not None and self.history_length is None:
+            raise ValueError("Completed assistant turns require history_length.")
+        return self
 
 
 class ReplSessionMemory(BaseModel):
@@ -61,7 +67,7 @@ class ReplSessionMemory(BaseModel):
 
     def bind_persistence(
         self,
-        callback: Callable[["ReplSessionMemory"], None] | None,
+        callback: Callable[["ReplSessionMemory"], None],
         *,
         persisted: bool = False,
     ) -> None:
@@ -86,8 +92,8 @@ class ReplSessionMemory(BaseModel):
         self,
         content: str,
         *,
+        history_length: int,
         run_id: str | None = None,
-        history_length: int | None = None,
     ) -> DialogueTurn | None:
         if not content.strip():
             return None
@@ -215,10 +221,6 @@ class ReplSessionStore:
                     f"Fork turn {through_turn} exceeds completed Run count {len(completed)}."
                 )
             dialogue_index, boundary = completed[through_turn - 1]
-            if boundary.history_length is None:
-                raise ValueError(
-                    "Partial fork requires a persisted canonical history boundary."
-                )
             if boundary.history_length > len(messages):
                 raise ValueError("Persisted fork boundary exceeds canonical message history.")
             dialogue = dialogue[: dialogue_index + 1]
@@ -263,9 +265,11 @@ class ReplSessionStore:
         sessions: list[ReplSessionMemory] = []
         if self.sessions_root.is_dir():
             for path in self.sessions_root.glob("*/*/*/session_*/session.json"):
-                try:
-                    session = self._read_session(path, resolved)
-                except (OSError, ValueError):
+                session = ReplSessionMemory.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+                self._validate_session_id(session.session_id)
+                if session.workspace != resolved:
                     continue
                 session.bind_persistence(self.save, persisted=True)
                 sessions.append(session)

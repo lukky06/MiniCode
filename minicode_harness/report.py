@@ -197,7 +197,6 @@ def collect_context_metrics(
     """Collect context-management metrics from trace events."""
 
     tool_calls = [event for event in events if event.get("type") == "tool_called"]
-    tool_results = [event for event in events if event.get("type") == "tool_result"]
     context_events = [event for event in events if event.get("type") == "context_built"]
     token_estimates = [
         int(event.get("token_estimate") or 0)

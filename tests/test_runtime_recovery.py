@@ -17,7 +17,7 @@ class StreamingTruncatedModelClient(ModelClient):
     def call_request(self, request):
         raise AssertionError("stream_request should be used")
 
-    def stream_request(self, request, *, on_text_delta=None):
+    def stream_request(self, request, *, on_text_delta=None, on_reasoning_delta=None):
         self.calls += 1
         if self.calls == 1:
             if on_text_delta is not None:

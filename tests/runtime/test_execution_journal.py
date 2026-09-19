@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+from pydantic import ValidationError
+
 from minicode_harness.loop import AgentLoop
 from minicode_harness.resume import resume_run
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
+from minicode_harness.policy import check_command_allowed
 from minicode_harness.state import (
     ApprovalDecision,
     CheckpointStore,
@@ -31,6 +35,10 @@ class ScriptedModelClient(ModelClient):
 
 class RecordingCommandExecutor:
     sandboxed = False
+    command_rules = ()
+
+    def classify(self, argv):
+        return check_command_allowed(argv, sandboxed=False, rules=self.command_rules)
 
     def execute(
         self,
@@ -85,6 +93,30 @@ def test_execution_journal_round_trips_durable_lifecycle(tmp_path, monkeypatch) 
     assert events[0].entry_id == events[1].entry_id
     assert events[1].after_hashes == {"app.py": "after"}
     assert len(fsync_calls) == 2
+
+
+def test_execution_journal_ignores_only_truncated_last_record(tmp_path) -> None:
+    journal = ExecutionJournal(tmp_path / "execution-journal.jsonl")
+    prepared = journal.append_prepared(
+        entry_id="1:call_1",
+        run_id="run_1",
+        step=1,
+        tool_call_id="call_1",
+        tool_name="write",
+        argument_fingerprint="abc",
+        effect_kind="filesystem",
+        target_paths=["app.py"],
+        before_hashes={"app.py": None},
+        expected_after_hashes={"app.py": "after"},
+    )
+    with journal.path.open("a", encoding="utf-8", newline="") as handle:
+        handle.write('{"event":"COMPLETED"')
+
+    assert journal.load_events() == [prepared]
+
+    journal.path.write_text('{"event":"BROKEN"}\n', encoding="utf-8")
+    with pytest.raises(ValidationError):
+        journal.load_events()
 
 
 def test_write_execution_records_prepared_and_completed_hashes(tmp_path) -> None:

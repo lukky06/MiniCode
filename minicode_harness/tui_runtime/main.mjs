@@ -11,6 +11,7 @@ var SERVER_TYPES = /* @__PURE__ */ new Set([
   "session_settings",
   "run_started",
   "context",
+  "context_compaction",
   "tool_started",
   "tool_finished",
   "assistant_delta",
@@ -96,6 +97,16 @@ function validateRequiredFields(value) {
       requirePositive(value, "window");
       requirePositive(value, "prompt_budget");
       requireNonNegative(value, "reserved_output");
+      return;
+    case "context_compaction":
+      exactKeys(value, ["type", "kind", "phase", "duration_ms"]);
+      if (value.kind !== "semantic") {
+        throw new Error("Expected semantic context compaction kind");
+      }
+      if (!["started", "completed", "failed"].includes(String(value.phase))) {
+        throw new Error("Expected context compaction phase");
+      }
+      requireOptionalNonNegativeInteger(value, "duration_ms");
       return;
     case "tool_started":
       exactKeys(value, ["type", "id", "step", "tool", "target"]);
@@ -13991,6 +14002,23 @@ var MiniCodeTuiApp = class {
         break;
       case "context":
         this.footer.setContext(event.used, event.prompt_budget);
+        break;
+      case "context_compaction":
+        if (event.phase === "started") {
+          this.footer.setStatus("Compacting context", "working");
+        } else if (event.phase === "completed") {
+          this.footer.setStatus(
+            "Working",
+            "working",
+            `context compacted \xB7 ${event.duration_ms ?? 0}ms`
+          );
+        } else {
+          this.footer.setStatus(
+            "Working",
+            "working",
+            `context compaction fallback \xB7 ${event.duration_ms ?? 0}ms`
+          );
+        }
         break;
       case "tool_started": {
         const trackElapsed = event.tool === "run_command";

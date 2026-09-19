@@ -252,7 +252,7 @@ class AgentLoop:
         )
         restoring = initial_message_history is not None
         prior_messages = (
-            list(initial_message_history or [])
+            list(initial_message_history)
             if restoring
             else (self.session_memory.load_message_history() if self.session_memory else [])
         )
@@ -398,8 +398,7 @@ class AgentLoop:
             if model_outcome.should_continue:
                 continue
             response = model_outcome.response
-            if response is None:
-                raise RuntimeError("Model step returned no response or terminal result.")
+            assert response is not None
 
             if response.is_final():
                 final_outcome = self._accept_final_response(step, response)
@@ -782,11 +781,11 @@ class AgentLoop:
         )
 
     def _rollback_unfinished_changes(self, *, step: int, reason: str) -> None:
-        outcome = self.tool_runtime.rollback_unfinished_changes(
+        rolled_back = self.tool_runtime.rollback_unfinished_changes(
             step=step,
             reason=reason,
         )
-        if not outcome.performed:
+        if not rolled_back:
             return
         self.modified_files = []
         mark_verification_rolled_back(self.run_state, reason=reason)
@@ -798,7 +797,12 @@ class AgentLoop:
     ) -> None:
         for tool_call in tool_calls:
             self.tool_call_count += 1
-            self._emit_tool_call_started(step, tool_call)
+            self.output_sink.tool_call_started(
+                step=step,
+                tool_name=tool_call.name,
+                arguments=dict(tool_call.arguments),
+                tool_call_id=tool_call.id,
+            )
             observation = self._simple_observation(
                 tool_call,
                 f"Tool {tool_call.name} was not executed because the run was cancelled.",
@@ -1048,22 +1052,16 @@ class AgentLoop:
         if self.stream_model and final_text and not self._current_stream_emitted_final_text:
             self.output_sink.model_text_delta(final_text)
 
-    def _emit_tool_call_started(self, step: int, tool_call: NormalizedToolCall) -> None:
-        self.tool_runtime.emit_tool_call_started(step, tool_call)
-
     def _emit_tool_call_finished(self, step: int, observation: ContextObservation) -> None:
-        handler = getattr(self.output_sink, "tool_call_finished", None)
-        if handler is not None:
-            status = str(observation.metadata.get("status") or "ok")
-            metadata = _tool_ui_metadata(observation, status=status)
-            handler(
-                step=step,
-                tool_name=observation.tool_name,
-                status=status,
-                tool_call_id=observation.tool_call_id,
-                summary=_tool_ui_summary(observation),
-                metadata=metadata,
-            )
+        status = str(observation.metadata.get("status") or "ok")
+        self.output_sink.tool_call_finished(
+            step=step,
+            tool_name=observation.tool_name,
+            status=status,
+            tool_call_id=observation.tool_call_id,
+            summary=_tool_ui_summary(observation),
+            metadata=_tool_ui_metadata(observation, status=status),
+        )
 
     def _append_tool_budget_results(
         self,

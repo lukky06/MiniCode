@@ -433,7 +433,7 @@ def _run_setup_command(
         raise PermissionError(
             f"Setup command is not allowed by task constraints: {command}"
         )
-    result = run_command(workspace, command)
+    result = run_command(workspace, command, approval_granted=True)
     trace_writer.write_event(
         "benchmark_setup_command",
         step=step,
@@ -497,11 +497,36 @@ def _approval_allowed(
 
 
 def _command_allowed_by_constraints(argv: list[str], allowed_commands: list[str]) -> bool:
-    policy_result = check_command_allowed(argv)
+    policy_result = check_command_allowed(argv, sandboxed=True)
     if not policy_result.allowed:
         return False
     command = render_argv(policy_result.argv)
-    return command in allowed_commands or bool(policy_result.rule and policy_result.rule in allowed_commands)
+    if command in allowed_commands:
+        return True
+    return any(
+        _matches_legacy_benchmark_command_pattern(policy_result.argv, pattern)
+        for pattern in allowed_commands
+    )
+
+
+def _matches_legacy_benchmark_command_pattern(argv: list[str], pattern: str) -> bool:
+    """Preserve frozen benchmark-suite command patterns outside normal Runtime policy."""
+
+    if pattern == "python -m pytest [focused args]":
+        return len(argv) >= 3 and argv[:3] in (
+            ["python", "-m", "pytest"],
+            ["python3", "-m", "pytest"],
+        )
+    if pattern == "mvn -q -Dtest=<selector> test":
+        if not argv or Path(argv[0]).name.lower() not in {"mvn", "mvn.cmd", "mvn.bat"}:
+            return False
+        tail = argv[1:]
+        return (
+            "-q" in tail
+            and "test" in tail
+            and any(argument.startswith("-Dtest=") and len(argument) > len("-Dtest=") for argument in tail)
+        )
+    return False
 
 
 def _path_allowed(path: str, constraints: BenchmarkConstraints) -> tuple[bool, str | None]:
@@ -756,7 +781,7 @@ def _copy_grader_assets(
 def _run_grader_command(workspace: Path, command: str | list[str] | None):
     if not command:
         raise ValueError("Command-based oracle requires oracle.command.")
-    return run_command(workspace, command)
+    return run_command(workspace, command, approval_granted=True)
 
 
 def _command_oracle_payload(oracle_type: str, result: Any) -> dict[str, Any]:

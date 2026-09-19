@@ -20,11 +20,7 @@ from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
 from minicode_harness.models import ModelClient, NormalizedToolCall, create_model_client
 from minicode_harness.output import OutputSink
-from minicode_harness.policy import (
-    ApprovalPolicy,
-    CommandRule,
-    PermissionMode,
-)
+from minicode_harness.policy import CommandRule, PermissionMode
 from minicode_harness.runtime.collaboration import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
@@ -78,13 +74,10 @@ def latest_recoverable_run_id(
         conversation_session_id=conversation_session_id,
     )
     for run_id in reversed(run_ids):
-        try:
-            session = store.load_session(run_id)
-            checkpoint = CheckpointStore(
-                store.path_for(run_id) / "checkpoints"
-            ).load_latest()
-        except (FileNotFoundError, OSError, ValueError):
-            continue
+        session = store.load_session(run_id)
+        checkpoint = CheckpointStore(
+            store.path_for(run_id) / "checkpoints"
+        ).load_latest()
         if session.status == "completed" or checkpoint is None:
             continue
         if checkpoint.status in RECOVERABLE_CHECKPOINT_STATUSES:
@@ -770,19 +763,6 @@ def _checkpoint_digest_paths(modified_files: list[str], run_state: RunState) -> 
     for inspected in run_state.inspected_files:
         _append_unique_limited(paths, inspected.path, limit=10_000)
     return paths
-
-
-def _modified_files_from_result(tool_name: str, result: Any) -> list[str]:
-    model_dump = getattr(result, "model_dump", None)
-    payload = model_dump(mode="json") if callable(model_dump) else result
-    if not isinstance(payload, dict):
-        return []
-    if tool_name == "apply_patch":
-        return list(payload.get("files") or [])
-    if tool_name in {"edit", "write"}:
-        path = payload.get("path")
-        return [path] if path else []
-    return []
 
 
 def _append_unique_limited(values: list[str], value: str, *, limit: int) -> None:

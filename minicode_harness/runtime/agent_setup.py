@@ -19,7 +19,7 @@ from minicode_harness.context import (
 from minicode_harness.hooks import HookManager, default_hook_manager
 from minicode_harness.mcp import MCPManager
 from minicode_harness.memory import RepositoryMemoryStore
-from minicode_harness.models import ModelClient
+from minicode_harness.models import ModelCapabilities, ModelClient
 from minicode_harness.output import (
     NullOutputSink,
     OutputSink,
@@ -64,7 +64,7 @@ class AgentComponents:
     cancellation_token: CancellationToken
     hook_manager: HookManager
     recovery_policy: ModelRecoveryPolicy
-    model_capabilities: Any
+    model_capabilities: ModelCapabilities
     output_budget: ModelOutputBudget
     mcp_manager: MCPManager | None
     artifact_dir: Path
@@ -150,10 +150,8 @@ def build_agent_components(
     resolved_hook_manager = hook_manager or default_hook_manager(trace_writer=trace_writer)
     resolved_recovery = recovery_policy or ModelRecoveryPolicy()
 
-    model_capabilities = getattr(model_client, "capabilities", None)
-    model_max_output_tokens = int(
-        getattr(model_capabilities, "max_output_tokens", 4096)
-    )
+    model_capabilities = model_client.capabilities
+    model_max_output_tokens = model_capabilities.max_output_tokens
     output_budget = ModelOutputBudget(
         current=min(4096, model_max_output_tokens),
         maximum=model_max_output_tokens,
@@ -244,12 +242,9 @@ def build_agent_components(
         )
     )
     capabilities_budget = TokenBudget(
-        context_budget=int(getattr(model_capabilities, "context_window", 32_000)),
-        reserved_output=int(
-            getattr(model_capabilities, "reserved_output_tokens", 6_000)
-        ),
+        context_budget=model_capabilities.context_window,
+        reserved_output=model_capabilities.reserved_output_tokens,
         soft_limit=0.80,
-        semantic_limit=0.88,
         hard_limit=0.95,
     )
     resolved_context_builder = context_builder or ContextBuilder(

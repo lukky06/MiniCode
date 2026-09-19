@@ -6,7 +6,6 @@ provider-native canonical message history owned by ``UserTurnState``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 
@@ -21,10 +20,6 @@ from .types import BuiltContext, ContextCompressionEvent, ContextSkill, TokenBud
 
 
 PROMPT_BUILDER_VERSION = PROMPT_RUNTIME_VERSION
-@dataclass(frozen=True)
-class PromptPrefixMetadata:
-    prefix_hash: str | None = None
-    prefix_tokens: int = 0
 
 
 class ContextBuilder:
@@ -55,12 +50,13 @@ class ContextBuilder:
     ) -> BuiltContext:
         """Build one bounded system message under the configured prompt budget."""
 
-        stable_prefix, prefix = self._stable_prefix(
-            available_skills,
-            repository_rules,
-            long_term_context,
+        stable_prefix = build_stable_system_prefix(
+            available_skills=available_skills,
+            repository_rules=repository_rules,
+            long_term_context=long_term_context,
             repository_structure_card=repository_structure_card,
         )
+        prefix_hash, prefix_tokens = _prefix_metadata(stable_prefix)
         dynamic_suffix = build_dynamic_system_suffix(
             workspace=workspace,
             streaming_enabled=streaming_enabled,
@@ -86,7 +82,7 @@ class ContextBuilder:
             system = _combine_system(compact_prefix, dynamic_suffix)
             messages = _system_messages(system)
             token_estimate = estimate_tokens(system)
-            prefix = _prefix_metadata(compact_prefix)
+            prefix_hash, prefix_tokens = _prefix_metadata(compact_prefix)
             compression_events.append(
                 ContextCompressionEvent(
                     reason="system_prompt_soft_limit",
@@ -105,7 +101,7 @@ class ContextBuilder:
             )
             messages = _system_messages(minimal_system)
             token_estimate = estimate_tokens(minimal_system)
-            prefix = _prefix_metadata(minimal_system)
+            prefix_hash, prefix_tokens = _prefix_metadata(minimal_system)
             compression_events.append(
                 ContextCompressionEvent(
                     reason="system_prompt_hard_limit",
@@ -119,26 +115,9 @@ class ContextBuilder:
             messages=messages,
             token_estimate=token_estimate,
             compression_events=compression_events,
-            prompt_prefix_hash=prefix.prefix_hash,
-            prompt_prefix_tokens=prefix.prefix_tokens,
+            prompt_prefix_hash=prefix_hash,
+            prompt_prefix_tokens=prefix_tokens,
         )
-
-    def _stable_prefix(
-        self,
-        available_skills: list[ContextSkill],
-        repository_rules: str,
-        long_term_context: str,
-        *,
-        repository_structure_card: str,
-    ) -> tuple[str, PromptPrefixMetadata]:
-        content = build_stable_system_prefix(
-            available_skills=available_skills,
-            repository_rules=repository_rules,
-            long_term_context=long_term_context,
-            repository_structure_card=repository_structure_card,
-        )
-        return content, _prefix_metadata(content)
-
 
 def _combine_system(stable_prefix: str, dynamic_suffix: str) -> str:
     return "\n\n".join(
@@ -170,8 +149,5 @@ def _clip(value: str, limit: int) -> str:
     return text[: max(0, limit - 24)].rstrip() + "\n...<system compacted>"
 
 
-def _prefix_metadata(content: str) -> PromptPrefixMetadata:
-    return PromptPrefixMetadata(
-        prefix_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        prefix_tokens=estimate_tokens(content),
-    )
+def _prefix_metadata(content: str) -> tuple[str, int]:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest(), estimate_tokens(content)

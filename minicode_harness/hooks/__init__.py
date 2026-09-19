@@ -2,12 +2,11 @@
 
 from .builtins import CommandPolicyHook, InvalidWriteTargetHook, default_hook_manager
 from .manager import HookManager
-from .types import Hook, HookAction, HookDecision, HookEvent, HookEventName
+from .types import Hook, HookDecision, HookEvent, HookEventName
 
 __all__ = [
     "CommandPolicyHook",
     "Hook",
-    "HookAction",
     "HookDecision",
     "HookEvent",
     "HookEventName",

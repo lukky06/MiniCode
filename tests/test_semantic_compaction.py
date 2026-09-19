@@ -318,7 +318,6 @@ def _hard_pressure_preparer(compactor: Any) -> ContextPreparer:
             context_budget=16_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.38,
             hard_limit=0.75,
         ),
         semantic_compactor=compactor,
@@ -555,7 +554,6 @@ def test_proactive_semantic_failure_compacts_below_trigger_without_retry() -> No
             context_budget=16_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.38,
             hard_limit=0.98,
         ),
         semantic_compactor=compactor,
@@ -601,7 +599,6 @@ def test_semantic_failure_with_irreducible_active_user_is_throttled() -> None:
             context_budget=10_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.70,
             hard_limit=0.95,
         ),
         semantic_compactor=compactor,
@@ -637,7 +634,7 @@ def test_semantic_failure_with_irreducible_active_user_is_throttled() -> None:
     assert semantic_event.details["failure_reason"] == (
         "semantic_compaction_request_exceeds_context_window"
     )
-    assert first.token_estimate > preparer.budget.semantic_token_limit
+    assert first.token_estimate > preparer.budget.soft_token_limit
     assert first.token_estimate <= preparer.budget.hard_token_limit
     assert [
         message["content"]
@@ -661,7 +658,7 @@ def test_semantic_failure_with_irreducible_active_user_is_throttled() -> None:
     assert second.token_estimate == first.token_estimate
 
 
-def test_semantic_compactor_is_not_called_below_semantic_limit() -> None:
+def test_semantic_compactor_is_not_called_below_soft_limit() -> None:
     compactor = RecordingSemanticCompactor()
     preparer = ContextPreparer(
         TokenBudget(context_budget=100_000, reserved_output=0),
@@ -688,7 +685,6 @@ def test_soft_preclean_does_not_consume_active_turn_semantic_attempt() -> None:
             context_budget=12_000,
             reserved_output=0,
             soft_limit=0.10,
-            semantic_limit=0.25,
             hard_limit=0.95,
         ),
         semantic_compactor=compactor,
@@ -711,7 +707,7 @@ def test_soft_preclean_does_not_consume_active_turn_semantic_attempt() -> None:
         event.details.get("phase") == "soft"
         for event in first.compression_events
     )
-    assert first.token_estimate <= preparer.budget.semantic_token_limit
+    assert first.token_estimate <= preparer.budget.soft_token_limit
 
     continued_messages = deepcopy(first.request.messages)
     continued_messages.extend(_tool_group(2, chars=9_000))
@@ -834,14 +830,13 @@ def test_llm_compactor_receives_active_user_and_recent_tool_as_context_only() ->
     assert "tool_call_id" in serialized
 
 
-def test_semantic_compaction_triggers_before_emergency_hard_limit() -> None:
+def test_semantic_compaction_runs_when_soft_projection_still_exceeds_soft_limit() -> None:
     compactor = RecordingSemanticCompactor()
     preparer = ContextPreparer(
         TokenBudget(
             context_budget=16_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.38,
             hard_limit=0.98,
         ),
         semantic_compactor=compactor,
@@ -859,7 +854,7 @@ def test_semantic_compaction_triggers_before_emergency_hard_limit() -> None:
         for item in prepared.compression_events
         if item.reason == "semantic_history"
     )
-    assert event.before_tokens > preparer.budget.semantic_token_limit
+    assert event.before_tokens > preparer.budget.soft_token_limit
     assert event.before_tokens <= preparer.budget.hard_token_limit
     assert event.details["phase"] == "semantic"
     assert event.details["success"] is True
@@ -872,7 +867,6 @@ def test_active_user_and_recent_tool_are_context_only_and_remain_exact() -> None
             context_budget=16_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.70,
             hard_limit=0.98,
         ),
         semantic_compactor=compactor,
@@ -938,7 +932,6 @@ def test_semantic_compaction_skips_call_when_auxiliary_request_cannot_fit() -> N
             context_budget=3_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.30,
             hard_limit=0.95,
         ),
         semantic_compactor=compactor,

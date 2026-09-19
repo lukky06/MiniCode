@@ -24,7 +24,7 @@ from .permissions import (
     PermissionMode,
     decide_permission,
 )
-from .risk import RiskLevel, risk_level_for_tool, tool_requires_approval
+from .risk import RiskLevel
 
 __all__ = [
     "APPROVAL_COMMAND_EXAMPLES",
@@ -48,6 +48,4 @@ __all__ = [
     "resolve_command_executable_identity",
     "resolve_command_session_grant",
     "render_command_policy_for_prompt",
-    "risk_level_for_tool",
-    "tool_requires_approval",
 ]

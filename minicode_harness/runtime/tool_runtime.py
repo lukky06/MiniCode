@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
 import re
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -41,13 +41,17 @@ from minicode_harness.state import (
     ReplSessionMemory,
     digest_workspace_files,
 )
-from minicode_harness.tools import FileReadResult, StaleWriteError, ToolRegistry
-from minicode_harness.tools.registry import ToolAdmission
-from minicode_harness.tools.semantics import (
-    is_edit_tool,
-    is_memory_read,
-    is_workspace_read,
+from minicode_harness.tools import (
+    CommandRunResult,
+    EditFileResult,
+    FileReadResult,
+    PatchApplyResult,
+    StaleWriteError,
+    ToolRegistry,
+    WriteFileResult,
 )
+from minicode_harness.tools.registry import ToolAdmission
+from minicode_harness.tools.semantics import is_edit_tool, is_memory_read
 from minicode_harness.trace import TraceWriter
 from minicode_harness.workspace import WorkspaceAccessError, WorkspaceGuard, extract_source_paths
 
@@ -76,7 +80,7 @@ class ModelOutputBudget:
 class ToolExecutionOutcome:
     observation: ContextObservation
     stop_reason: str | None = None
-    modified_files: list[str] | None = None
+    modified_files: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -85,14 +89,6 @@ class _PreparedToolExecution:
     expected_file_sha256: str | None
     mutation_preview: dict[str, Any] | None
     read_overlap_detected: bool
-
-
-@dataclass(frozen=True)
-class RollbackOutcome:
-    performed: bool
-    restored: tuple[str, ...] = ()
-    deleted: tuple[str, ...] = ()
-    errors: tuple[str, ...] = ()
 
 
 @dataclass
@@ -119,7 +115,7 @@ class ToolRuntime:
         approval_store: ApprovalStore,
         approval_policy: ApprovalPolicy,
         permission_mode: PermissionMode,
-        execution_journal: ExecutionJournal | None,
+        execution_journal: ExecutionJournal,
         session_memory: ReplSessionMemory | None,
         artifact_dir: Path,
         output_sink: OutputSink,
@@ -212,22 +208,32 @@ class ToolRuntime:
             tool=tool_call.name,
             args=tool_call.arguments,
         )
-        self.emit_tool_call_started(step, tool_call)
+        self.output_sink.tool_call_started(
+            step=step,
+            tool_name=tool_call.name,
+            arguments=dict(tool_call.arguments),
+            tool_call_id=tool_call.id,
+        )
+        prepared = self._prepare_tool_call(
+            step=step,
+            tool_call=tool_call,
+            available_tool_names=available_tool_names,
+            workspace_generation=workspace_generation,
+            memory_read_allowed=memory_read_allowed,
+        )
+        if isinstance(prepared, ToolExecutionOutcome):
+            return prepared
         try:
-            prepared = self._prepare_tool_call(
-                step=step,
-                tool_call=tool_call,
-                available_tool_names=available_tool_names,
-                workspace_generation=workspace_generation,
-                memory_read_allowed=memory_read_allowed,
-            )
-            if isinstance(prepared, ToolExecutionOutcome):
-                return prepared
             result = self._execute_prepared_tool(
                 step=step,
                 tool_call=tool_call,
                 prepared=prepared,
             )
+        except StaleWriteError as exc:
+            return self._stale_write_error_outcome(step, tool_call, str(exc))
+        except Exception as exc:
+            return self._tool_execution_error_outcome(step, tool_call, exc)
+        try:
             return self._finalize_tool_result(
                 step=step,
                 tool_call=tool_call,
@@ -235,10 +241,8 @@ class ToolRuntime:
                 result=result,
                 workspace_generation=workspace_generation,
             )
-        except StaleWriteError as exc:
-            return self._stale_write_error_outcome(step, tool_call, str(exc))
-        except Exception as exc:
-            return self._unexpected_tool_error_outcome(step, tool_call, exc)
+        except OSError as exc:
+            return self._tool_execution_error_outcome(step, tool_call, exc)
 
     def _prepare_tool_call(
         self,
@@ -299,13 +303,25 @@ class ToolRuntime:
                     "loop": self.hook_owner,
                     "tool_call": tool_call,
                     "command_policy": admission.command_policy,
-                    "available_tool_names": available_tool_names,
                 },
             )
         )
-        hook_outcome = self._hook_outcome(step, tool_call, decision)
-        if hook_outcome is not None:
-            return hook_outcome
+        if decision.action == "block":
+            observation = decision.observation
+            assert observation is not None
+            status = str(observation.metadata.get("status") or decision.action)
+            self.trace_writer.write_event(
+                "tool_result",
+                step=step,
+                tool_call_id=tool_call.id,
+                tool=tool_call.name,
+                status=status,
+                hook=decision.hook_name,
+                reason=decision.reason,
+                preview=observation.output_preview,
+                artifact_path=observation.artifact_path,
+            )
+            return ToolExecutionOutcome(observation=observation)
 
         # Hooks see normalized arguments, then admission regains authority before execution.
         tool_call.arguments = deepcopy(admission.arguments)
@@ -328,24 +344,26 @@ class ToolRuntime:
             workspace_generation=workspace_generation,
         )
 
-        expected_file_sha256, stale_write = self._prepare_write_freshness(
-            step,
-            tool_call,
-        )
-        if stale_write is not None:
-            return stale_write
-
-        mutation_preview = (
-            self.tools.preview_admitted(admission)
-            if admission.name in {"edit", "write", "apply_patch"}
-            else None
-        )
-        approval_decision = self._request_approval(
-            step,
-            tool_call,
-            admission,
-            preview=mutation_preview,
-        )
+        try:
+            expected_file_sha256, stale_write = self._prepare_write_freshness(
+                step,
+                tool_call,
+            )
+            if stale_write is not None:
+                return stale_write
+            mutation_preview = (
+                self.tools.preview_admitted(admission)
+                if admission.name in {"edit", "write", "apply_patch"}
+                else None
+            )
+            approval_decision = self._request_approval(
+                step,
+                tool_call,
+                admission,
+                preview=mutation_preview,
+            )
+        except (OSError, ValueError) as exc:
+            return self._tool_execution_error_outcome(step, tool_call, exc)
         if approval_decision is not None:
             status = f"approval_{approval_decision.value}"
             content = (
@@ -473,7 +491,7 @@ class ToolRuntime:
             modified_files=modified_files_from_result(tool_call.name, result),
         )
 
-    def _unexpected_tool_error_outcome(
+    def _tool_execution_error_outcome(
         self,
         step: int,
         tool_call: NormalizedToolCall,
@@ -529,7 +547,7 @@ class ToolRuntime:
         tool_call: NormalizedToolCall,
         admission: ToolAdmission,
     ) -> ExecutionJournalEvent | None:
-        if self.execution_journal is None or tool_call.name not in {
+        if tool_call.name not in {
             "edit",
             "write",
             "apply_patch",
@@ -571,27 +589,25 @@ class ToolRuntime:
         prepared: ExecutionJournalEvent | None,
         result: Any,
     ) -> None:
-        if self.execution_journal is None or prepared is None:
+        if prepared is None:
             return
         after_hashes = (
             digest_workspace_files(self.workspace, prepared.target_paths)
             if prepared.target_paths
             else {}
         )
-        lifecycle_status = getattr(result, "lifecycle_status", None)
+        if prepared.effect_kind == "command":
+            command_result = cast(CommandRunResult, result)
+            result_status = command_result.lifecycle_status
+            returncode = command_result.returncode
+        else:
+            result_status = "completed"
+            returncode = None
         self.execution_journal.append_completed(
             prepared,
             after_hashes=after_hashes,
-            result_status=(
-                str(lifecycle_status)
-                if isinstance(lifecycle_status, str)
-                else "completed"
-            ),
-            returncode=(
-                int(result.returncode)
-                if isinstance(getattr(result, "returncode", None), int)
-                else None
-            ),
+            result_status=result_status,
+            returncode=returncode,
         )
 
     def synchronize_reuse_with_messages(
@@ -611,9 +627,9 @@ class ToolRuntime:
             workspace_generation=workspace_generation,
         )
 
-    def rollback_unfinished_changes(self, *, step: int, reason: str) -> RollbackOutcome:
+    def rollback_unfinished_changes(self, *, step: int, reason: str) -> bool:
         if not self.rollback_on_unfinished_stop or not self._write_snapshots:
-            return RollbackOutcome(performed=False)
+            return False
         restored: list[str] = []
         deleted: list[str] = []
         errors: list[str] = []
@@ -641,45 +657,7 @@ class ToolRuntime:
             deleted=deleted,
             errors=errors,
         )
-        return RollbackOutcome(
-            performed=True,
-            restored=tuple(restored),
-            deleted=tuple(deleted),
-            errors=tuple(errors),
-        )
-
-    def emit_tool_call_started(self, step: int, tool_call: NormalizedToolCall) -> None:
-        handler = getattr(self.output_sink, "tool_call_started", None)
-        if handler is not None:
-            handler(
-                step=step,
-                tool_name=tool_call.name,
-                arguments=dict(tool_call.arguments or {}),
-                tool_call_id=tool_call.id,
-            )
-
-    def _hook_outcome(
-        self,
-        step: int,
-        tool_call: NormalizedToolCall,
-        decision: HookDecision,
-    ) -> ToolExecutionOutcome | None:
-        if decision.action == "allow" or decision.observation is None:
-            return None
-        observation = decision.observation
-        status = str(observation.metadata.get("status") or decision.action)
-        self.trace_writer.write_event(
-            "tool_result",
-            step=step,
-            tool_call_id=tool_call.id,
-            tool=tool_call.name,
-            status=status,
-            hook=decision.hook_name,
-            reason=decision.reason,
-            preview=observation.output_preview,
-            artifact_path=observation.artifact_path,
-        )
-        return ToolExecutionOutcome(observation=observation)
+        return True
 
     def _unavailable_tool_outcome(
         self,
@@ -933,11 +911,9 @@ class ToolRuntime:
         step: int,
         tool_call: NormalizedToolCall,
     ) -> tuple[str | None, ToolExecutionOutcome | None]:
-        if tool_call.name != "write" or not bool(tool_call.arguments.get("overwrite", False)):
+        if tool_call.name != "write" or not tool_call.arguments["overwrite"]:
             return None, None
-        raw_path = str(tool_call.arguments.get("path") or "").strip()
-        if not raw_path:
-            return None, None
+        raw_path = tool_call.arguments["path"].strip()
         target = WorkspaceGuard(self.workspace).resolve(raw_path)
         if not target.exists():
             return None, None
@@ -996,7 +972,7 @@ class ToolRuntime:
                 "retry_hint": "Read the complete target file again before retrying the overwrite.",
                 "side_effect": "none",
                 "reason": reason,
-                "path": str(tool_call.arguments.get("path") or ""),
+                "path": tool_call.arguments["path"],
             },
         )
         self.trace_writer.write_event(
@@ -1006,7 +982,7 @@ class ToolRuntime:
             tool=tool_call.name,
             status="stale_write",
             reason=reason,
-            path=str(tool_call.arguments.get("path") or ""),
+            path=tool_call.arguments["path"],
         )
         return ToolExecutionOutcome(observation=observation)
 
@@ -1016,7 +992,7 @@ class ToolRuntime:
         tool_call: NormalizedToolCall,
         admission: ToolAdmission,
         *,
-        preview: dict[str, Any] | None = None,
+        preview: dict[str, Any] | None,
     ) -> ApprovalDecision | None:
         if not admission.requires_approval:
             return None
@@ -1110,7 +1086,7 @@ class ToolRuntime:
         if response.decision == ApprovalDecision.APPROVE:
             return None
         if response.decision == ApprovalDecision.APPROVE_SESSION:
-            if session_grant is None or self.session_memory is None:
+            if session_grant is None:
                 return ApprovalDecision.REJECT
             self.session_memory.grant_command_approval(session_grant)
             self.trace_writer.write_event(
@@ -1130,22 +1106,19 @@ class ToolRuntime:
     def _command_session_grant(self, tool_call: NormalizedToolCall) -> str | None:
         if tool_call.name != "run_command" or self.session_memory is None:
             return None
-        argv = tool_call.arguments.get("argv")
-        if not isinstance(argv, list) or not argv:
-            return None
         executor = self.tools.command_executor
         return resolve_command_session_grant(
             self.workspace,
-            argv,
-            sandboxed=bool(getattr(executor, "sandboxed", False)),
-            rules=tuple(getattr(executor, "command_rules", ())),
+            tool_call.arguments["argv"],
+            sandboxed=executor.sandboxed,
+            rules=executor.command_rules,
         )
 
-    def _command_session_executable(self, tool_call: NormalizedToolCall) -> str | None:
-        argv = tool_call.arguments.get("argv")
-        if not isinstance(argv, list) or not argv:
-            return None
-        return resolve_command_executable_identity(self.workspace, str(argv[0]))
+    def _command_session_executable(self, tool_call: NormalizedToolCall) -> str:
+        return resolve_command_executable_identity(
+            self.workspace,
+            str(tool_call.arguments["argv"][0]),
+        )
 
     def _same_failed_command_outcome(
         self,
@@ -1157,8 +1130,6 @@ class ToolRuntime:
         if tool_call.name != "run_command":
             return None
         identity = command_identity(tool_call.arguments)
-        if identity is None:
-            return None
         with self._state_lock:
             previous = self._failed_command_attempts.get(identity)
         if previous is None:
@@ -1325,7 +1296,11 @@ class ToolRuntime:
     ) -> None:
         if observation.tool_name not in {"edit", "write", "apply_patch"}:
             return
-        if preview is None or getattr(result, "changed", True) is False:
+        if preview is None:
+            return
+        if observation.tool_name == "edit" and not cast(EditFileResult, result).changed:
+            return
+        if observation.tool_name == "write" and not cast(WriteFileResult, result).changed:
             return
         diff_preview, truncated = bounded_diff_preview(preview)
         if diff_preview is None:
@@ -1341,17 +1316,13 @@ class ToolRuntime:
     ) -> None:
         if tool_call.name != "run_command" or isinstance(result, dict):
             return
-        resolve_ms = getattr(result, "resolve_duration_ms", None)
-        spawn_ms = getattr(result, "spawn_duration_ms", None)
-        execute_ms = getattr(result, "execute_duration_ms", None)
-        if not all(isinstance(value, int) and value >= 0 for value in (resolve_ms, spawn_ms, execute_ms)):
+        command_result = cast(CommandRunResult, result)
+        resolve_ms = command_result.resolve_duration_ms
+        spawn_ms = command_result.spawn_duration_ms
+        execute_ms = command_result.execute_duration_ms
+        if resolve_ms is None or spawn_ms is None or execute_ms is None:
             return
-        duration_seconds = getattr(result, "duration_seconds", None)
-        total_ms = (
-            max(0, round(float(duration_seconds) * 1000))
-            if isinstance(duration_seconds, (int, float))
-            else resolve_ms + spawn_ms + execute_ms
-        )
+        total_ms = max(0, round(command_result.duration_seconds * 1000))
         self.trace_writer.write_event(
             "command_execution_timing",
             step=step,
@@ -1375,13 +1346,13 @@ class ToolRuntime:
             observation.metadata["command_status"] = "background_started"
             observation.metadata["runtime_task_id"] = result.get("runtime_task_id")
             return
-        lifecycle_status = getattr(result, "lifecycle_status", None)
-        if lifecycle_status is None:
-            return
+        command_result = cast(CommandRunResult, result)
+        lifecycle_status = command_result.lifecycle_status
         observation.metadata["command_status"] = lifecycle_status
-        duration_seconds = getattr(result, "duration_seconds", None)
-        if isinstance(duration_seconds, (int, float)):
-            observation.metadata["duration_ms"] = max(0, round(float(duration_seconds) * 1000))
+        observation.metadata["duration_ms"] = max(
+            0,
+            round(command_result.duration_seconds * 1000),
+        )
         if lifecycle_status == "completed":
             return
         status = {
@@ -1398,7 +1369,7 @@ class ToolRuntime:
             if lifecycle_status == "cancelled"
             else "Inspect the command output, change the workspace or command, then retry intentionally."
         )
-        failure_text = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}"
+        failure_text = f"{command_result.stdout}\n{command_result.stderr}"
         files = extract_source_paths(failure_text)
         if files:
             observation.metadata["failure_files"] = files
@@ -1466,8 +1437,6 @@ class ToolRuntime:
         if tool_call.name != "run_command":
             return
         identity = command_identity(tool_call.arguments)
-        if identity is None:
-            return
         observation.metadata["command_identity"] = list(identity)
         returncode = coerce_optional_int(observation.metadata.get("returncode"))
         if returncode is None:
@@ -1600,7 +1569,7 @@ def build_simple_observation(
     content: str,
     *,
     status: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, Any],
 ) -> ContextObservation:
     return ContextObservation(
         tool_call_id=tool_call.id,
@@ -1611,7 +1580,7 @@ def build_simple_observation(
         summary=content,
         is_important=True,
         is_truncated=False,
-        metadata={"status": status, **(metadata or {})},
+        metadata={"status": status, **metadata},
     )
 
 
@@ -1624,15 +1593,8 @@ def tool_result_status(observation: ContextObservation) -> str:
     return "ok"
 
 
-def command_identity(arguments: dict[str, Any]) -> tuple[str, ...] | None:
-    argv = arguments.get("argv")
-    if not (
-        isinstance(argv, list)
-        and argv
-        and all(isinstance(item, str) for item in argv)
-    ):
-        return None
-    return tuple(argv)
+def command_identity(arguments: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(arguments["argv"])
 
 
 def format_validation_location(location: Any) -> str:
@@ -1642,20 +1604,12 @@ def format_validation_location(location: Any) -> str:
 
 
 def tool_argument_expectations(tools: ToolRegistry, tool_name: str) -> list[str]:
-    schemas = tools.schemas([tool_name])
-    if not schemas:
-        return ["arguments matching the registered tool schema"]
-    parameters = schemas[0].get("function", {}).get("parameters", {})
-    properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
-    required = set(parameters.get("required", [])) if isinstance(parameters, dict) else set()
-    expectations: list[str] = []
-    for name, schema in properties.items():
-        if not isinstance(schema, dict):
-            continue
-        value_type = str(schema.get("type") or "value")
-        suffix = " (required)" if name in required else ""
-        expectations.append(f"{name}: {value_type}{suffix}")
-    return expectations or ["arguments matching the registered tool schema"]
+    parameters = tools.schemas([tool_name])[0]["function"]["parameters"]
+    required = set(parameters.get("required", []))
+    return [
+        f"{name}: {schema.get('type', 'value')}{' (required)' if name in required else ''}"
+        for name, schema in parameters["properties"].items()
+    ]
 
 
 
@@ -1666,25 +1620,22 @@ def write_strategy_from_result(tool_name: str, result: Any) -> str | None:
         return "patch"
     if tool_name != "write":
         return None
-    model_dump = getattr(result, "model_dump", None)
-    payload = model_dump(mode="json") if callable(model_dump) else result
-    if isinstance(payload, dict) and payload.get("created"):
-        return "full_write_create"
-    return "full_write_overwrite"
+    return (
+        "full_write_create"
+        if cast(WriteFileResult, result).created
+        else "full_write_overwrite"
+    )
 
 
 def modified_files_from_result(tool_name: str, result: Any) -> list[str]:
-    model_dump = getattr(result, "model_dump", None)
-    payload = model_dump(mode="json") if callable(model_dump) else result
-    if not isinstance(payload, dict):
-        return []
     if tool_name == "apply_patch":
-        return [str(path) for path in payload.get("files") or []]
-    if tool_name in {"edit", "write"}:
-        if payload.get("changed", True) is False:
-            return []
-        path = payload.get("path")
-        return [str(path)] if path else []
+        return list(cast(PatchApplyResult, result).files)
+    if tool_name == "edit":
+        edit_result = cast(EditFileResult, result)
+        return [edit_result.path] if edit_result.changed else []
+    if tool_name == "write":
+        write_result = cast(WriteFileResult, result)
+        return [write_result.path] if write_result.changed else []
     return []
 
 

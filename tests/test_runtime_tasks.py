@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from minicode_harness.policy import check_command_allowed
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.runtime_tasks import (
     BackgroundCommandManager,
@@ -14,11 +15,15 @@ from minicode_harness.tools import CommandRunResult, ToolRegistry
 
 class FakeCommandExecutor:
     sandboxed = False
+    command_rules = ()
 
     def __init__(self, *, delay: float = 0.0, returncode: int = 0) -> None:
         self.delay = delay
         self.returncode = returncode
         self.calls: list[tuple[list[str], bool]] = []
+
+    def classify(self, argv):
+        return check_command_allowed(argv, sandboxed=False, rules=self.command_rules)
 
     def execute(
         self,
@@ -172,10 +177,10 @@ def test_control_tools_are_stable_without_runtime_handlers(tmp_path: Path) -> No
         "status": "not_running",
         "task_id": "cmd_9999",
     }
-    assert tools.requires_approval(
+    assert tools.admit(
         "runtime_task_stop",
         {"task_id": "cmd_9999"},
-    ) is False
+    ).requires_approval is False
 
 
 def test_tool_registry_explicit_background_command_uses_manager(tmp_path: Path) -> None:

@@ -1,7 +1,13 @@
 import json
 from types import SimpleNamespace
 
-from minicode_harness.context import SEMANTIC_HISTORY_HEADING
+import pytest
+
+from minicode_harness.context import (
+    ContextCompressionEvent,
+    SEMANTIC_HISTORY_HEADING,
+    SessionCompactionState,
+)
 from minicode_harness.context.session_projection import project_canonical_messages
 from minicode_harness.loop import AgentRunResult
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
@@ -100,6 +106,47 @@ def test_run_executor_compacts_active_session_and_preserves_latest_turn(
     assert compaction_events[1][0] == "semantic"
     assert compaction_events[1][1] is not None
     assert compaction_events[1][2] is True
+
+
+def test_run_executor_rejects_unchanged_manual_compaction_without_failure_reason(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_memory = ReplSessionMemory(workspace=str(workspace.resolve()))
+    session_memory.replace_message_history([{"role": "user", "content": "compact this"}])
+
+    class FakeModelClient:
+        capabilities = ModelCapabilities(
+            context_window=16_000,
+            max_output_tokens=2_000,
+        )
+
+    class ContractBreakingPreparer:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def manual_compact(self, messages, *, compaction_state, focus):
+            return (
+                SessionCompactionState(),
+                ContextCompressionEvent(
+                    reason="semantic_history",
+                    before_tokens=10,
+                    after_tokens=10,
+                    details={"changed": False},
+                ),
+            )
+
+    monkeypatch.setattr(
+        run_executor_module,
+        "create_model_client",
+        lambda **kwargs: FakeModelClient(),
+    )
+    monkeypatch.setattr(run_executor_module, "ContextPreparer", ContractBreakingPreparer)
+
+    with pytest.raises(KeyError, match="failure_reason"):
+        RunExecutor(session_memory=session_memory).compact_session(provider="deepseek")
 
 
 def test_run_executor_review_uses_review_skill_and_readonly_subagent(
@@ -332,6 +379,7 @@ def test_run_executor_owns_recall_loop_persistence_and_finalization(tmp_path, mo
     class FakeLoop:
         def __init__(self, **kwargs) -> None:
             calls["loop_kwargs"] = kwargs
+            self.observations = []
             self.modified_files = ["src/example.py"]
             self.run_state = SimpleNamespace(
                 inspected_files=[],

@@ -9,10 +9,9 @@ controller.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 import json
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from minicode_harness.context import PromptBudgetExceeded
 from minicode_harness.context.builder import PROMPT_BUILDER_VERSION
@@ -20,6 +19,9 @@ from minicode_harness.context.token import estimate_tokens
 from minicode_harness.models import ModelProviderError, ModelRequest, ModelResponse
 from minicode_harness.output import ContextUsage, FinalAnswerXmlStreamEmitter
 from minicode_harness.runtime.recovery import ModelCallFailed, PromptTooLongFailure
+
+if TYPE_CHECKING:
+    from minicode_harness.loop import AgentLoop
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,7 @@ class ModelStepOutcome:
 class ModelStepRunner:
     """Prepare and request exactly one model step for an AgentLoop."""
 
-    def prepare(self, loop: Any, step: int) -> PreparedModelStep | Any:
+    def prepare(self, loop: AgentLoop, step: int) -> PreparedModelStep | Any:
         forced_final_only = loop._force_final_only_next_call
         final_only_step = forced_final_only or (
             loop.config.reserve_final_step and step == loop.config.max_steps
@@ -241,7 +243,7 @@ class ModelStepRunner:
 
     def request(
         self,
-        loop: Any,
+        loop: AgentLoop,
         step: int,
         prepared: PreparedModelStep,
     ) -> ModelStepOutcome:
@@ -366,7 +368,7 @@ class ModelStepRunner:
 
     def _call_model(
         self,
-        loop: Any,
+        loop: AgentLoop,
         step: int,
         request: ModelRequest,
     ) -> ModelResponse:
@@ -396,18 +398,11 @@ class ModelStepRunner:
                     loop._current_stream_emitted_final_text = emitter.emitted
 
                 try:
-                    stream_kwargs: dict[str, Any] = {
-                        "on_text_delta": on_text_delta,
-                    }
-                    if "on_reasoning_delta" in inspect.signature(
-                        loop.model_client.stream_request
-                    ).parameters:
-                        stream_kwargs["on_reasoning_delta"] = getattr(
-                            loop.output_sink,
-                            "model_reasoning_delta",
-                            None,
-                        )
-                    return loop.model_client.stream_request(request, **stream_kwargs)
+                    return loop.model_client.stream_request(
+                        request,
+                        on_text_delta=on_text_delta,
+                        on_reasoning_delta=loop.output_sink.model_reasoning_delta,
+                    )
                 except Exception as exc:
                     if emitter.emitted:
                         raise ModelProviderError(
@@ -527,7 +522,7 @@ def _tool_schema_metrics(
             default=str,
         )
         item = {
-            "name": str(schema.get("function", {}).get("name") or "unknown"),
+            "name": str(schema["function"]["name"]),
             "chars": len(schema_payload),
             "tokens": estimate_tokens(schema_payload),
         }

@@ -1,4 +1,7 @@
 import json
+
+import pytest
+
 from minicode_harness.context import ContextObservation
 from minicode_harness.context.token import estimate_tokens
 from minicode_harness.hooks import HookDecision, HookEvent, HookManager
@@ -24,7 +27,7 @@ class AllowHook:
 
     def handle(self, event: HookEvent) -> HookDecision:
         self.called = True
-        return HookDecision.allow(hook_name=self.name)
+        return HookDecision.allow()
 
 
 class BlockHook:
@@ -61,7 +64,7 @@ class LaterHook:
 
     def handle(self, event: HookEvent) -> HookDecision:
         self.called = True
-        return HookDecision.allow(hook_name=self.name)
+        return HookDecision.allow()
 
 
 class FailingHook:
@@ -116,28 +119,17 @@ def test_hook_manager_short_circuits_and_traces_non_allow_decision(tmp_path) -> 
     ]
 
 
-def test_hook_manager_records_hook_error_and_continues(tmp_path) -> None:
-    allow_hook = AllowHook()
-    trace_path = tmp_path / "trace.jsonl"
-    manager = HookManager(
-        [FailingHook(), allow_hook],
-        trace_writer=TraceWriter(trace_path),
-    )
+def test_hook_manager_propagates_hook_error(tmp_path) -> None:
+    manager = HookManager([FailingHook(), AllowHook()])
 
-    decision = manager.emit(
-        HookEvent(
-            name="pre_tool_use",
-            run_id="run_1",
-            task="Read file",
-            workspace=str(tmp_path),
-            step=1,
-            payload={},
+    with pytest.raises(RuntimeError, match="boom"):
+        manager.emit(
+            HookEvent(
+                name="pre_tool_use",
+                run_id="run_1",
+                task="Read file",
+                workspace=str(tmp_path),
+                step=1,
+                payload={},
+            )
         )
-    )
-
-    assert decision.action == "allow"
-    assert allow_hook.called is True
-    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    assert events[0]["type"] == "hook_error"
-    assert events[0]["hook"] == "failing_hook"
-    assert events[0]["error_type"] == "RuntimeError"

@@ -11,6 +11,7 @@ from minicode_harness.policy import (
     ApprovalPolicy,
     PermissionDecision,
     PermissionMode,
+    check_command_allowed,
     decide_permission,
 )
 from minicode_harness.state import ApprovalDecision, StaticApprovalClient
@@ -28,9 +29,13 @@ class ScriptedModelClient(ModelClient):
 
 class RecordingCommandExecutor:
     sandboxed = False
+    command_rules = ()
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], bool]] = []
+
+    def classify(self, argv):
+        return check_command_allowed(argv, sandboxed=False, rules=self.command_rules)
 
     def execute(
         self,

@@ -200,7 +200,7 @@ def build_agent_loop_from_session(
         initial_task_state=initial_task_state,
         initial_tool_calls=initial_tool_calls,
         provider=session.provider,
-        model=session.model or getattr(model_client, "model", None),
+        model=session.model,
         session_memory=session_memory,
         output_sink=output_sink,
         stream_model=stream_model,
@@ -258,12 +258,9 @@ class RunExecutor:
         model_client = create_model_client(provider=provider, model=model)
         capabilities = model_client.capabilities
         budget = TokenBudget(
-            context_budget=int(getattr(capabilities, "context_window", 32_000)),
-            reserved_output=int(
-                getattr(capabilities, "reserved_output_tokens", 6_000)
-            ),
+            context_budget=capabilities.context_window,
+            reserved_output=capabilities.reserved_output_tokens,
             soft_limit=0.80,
-            semantic_limit=0.88,
             hard_limit=0.95,
         )
         preparer = ContextPreparer(
@@ -309,7 +306,7 @@ class RunExecutor:
             reason=(
                 "semantic"
                 if changed
-                else str(event.details.get("failure_reason") or event.reason)
+                else str(event.details["failure_reason"])
             ),
             focus=" ".join(focus.split())[:500],
         )
@@ -618,7 +615,7 @@ class RunExecutor:
                 run_id=session.run_id,
                 user_input=request.task,
                 assistant_text=final_text,
-                observations=list(getattr(loop, "observations", [])),
+                observations=list(loop.observations),
                 modified_files=list(loop.modified_files),
                 verification=loop.run_state.verification,
             )
@@ -641,32 +638,30 @@ class RunExecutor:
             steps=agent_result.steps,
             tool_calls=agent_result.tool_calls,
             modified_files=list(loop.modified_files),
-            inspected_files=len(
-                getattr(getattr(loop, "run_state", None), "inspected_files", [])
-            ),
+            inspected_files=len(loop.run_state.inspected_files),
             verification_status=loop.run_state.verification.status,
             memory_review_status=(
-                getattr(memory_finalization, "review_status", None)
+                memory_finalization.review_status
                 if memory_finalization is not None
                 else None
             ),
             memory_reviewed_turns=(
-                int(getattr(memory_finalization, "reviewed_turns", 0))
+                memory_finalization.reviewed_turns
                 if memory_finalization is not None
                 else 0
             ),
             memory_candidate_count=(
-                int(getattr(memory_finalization, "candidate_count", 0))
+                memory_finalization.candidate_count
                 if memory_finalization is not None
                 else 0
             ),
             memory_auto_published_count=(
-                int(getattr(memory_finalization, "auto_published_count", 0))
+                memory_finalization.auto_published_count
                 if memory_finalization is not None
                 else 0
             ),
             memory_pending_candidates=(
-                int(getattr(memory_finalization, "pending_candidates", 0))
+                memory_finalization.pending_candidates
                 if memory_finalization is not None
                 else 0
             ),

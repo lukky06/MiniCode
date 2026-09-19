@@ -95,13 +95,10 @@ class GitWorktreeManager:
             return []
         statuses: list[WorktreeStatus] = []
         for path in sorted(manifest_dir.glob("*.json")):
-            try:
-                manifest = WorktreeManifest.model_validate_json(
-                    path.read_text(encoding="utf-8")
-                )
-                statuses.append(self.inspect(manifest))
-            except Exception:
-                continue
+            manifest = WorktreeManifest.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+            statuses.append(self.inspect(manifest))
         return statuses
 
     def inspect(self, manifest: WorktreeManifest) -> WorktreeStatus:

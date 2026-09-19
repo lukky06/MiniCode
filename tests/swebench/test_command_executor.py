@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from minicode_harness.policy import check_command_allowed
 from minicode_harness.state import ApprovalDecision, ApprovalRequest
 from minicode_harness.swebench import SweBenchApprovalClient, SweBenchDockerCommandExecutor
 from minicode_harness.swebench.docker_executor import _workspace_overlay
@@ -15,6 +16,10 @@ from minicode_harness.tools import CommandRunResult, ToolRegistry
 
 class RecordingExecutor:
     sandboxed = False
+    command_rules = ()
+
+    def classify(self, argv):
+        return check_command_allowed(argv, sandboxed=False, rules=self.command_rules)
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str], int]] = []

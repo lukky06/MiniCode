@@ -104,7 +104,7 @@ class CommandPolicyResult(BaseModel):
     risk_level: RiskLevel
     category: CommandCategory
     rule: str | None = None
-    argv: list[str] = Field(default_factory=list)
+    argv: list[str]
     effects: list[str] = Field(default_factory=list)
     reason: str | None = None
 
@@ -469,7 +469,7 @@ def _require_approval(
 
 def _deny(
     reason: str,
-    argv: list[str] | None = None,
+    argv: list[str],
     *,
     rule: str | None = None,
 ) -> CommandPolicyResult:
@@ -478,6 +478,6 @@ def _deny(
         risk_level=RiskLevel.HIGH,
         category=CommandCategory.DANGEROUS,
         rule=rule,
-        argv=argv or [],
+        argv=argv,
         reason=reason,
     )

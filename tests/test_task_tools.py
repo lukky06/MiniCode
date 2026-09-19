@@ -13,6 +13,7 @@ from minicode_harness.context.token import estimate_tokens
 from minicode_harness.loop import AgentLoop, AgentLoopConfig
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
+from minicode_harness.policy import RiskLevel
 from minicode_harness.state import CheckpointStore, TaskListState, TaskRecord, TaskStore
 from minicode_harness.tools import ToolRegistry
 from minicode_harness.trace import TraceWriter
@@ -167,7 +168,7 @@ def test_task_tools_have_small_schemas_and_need_no_approval(tmp_path: Path) -> N
         "tasks",
         "updates",
     }
-    assert registry.requires_approval("task") is False
+    assert registry.risk_level("task") == RiskLevel.LOW
     assert registry.history_effects()["task"]["read_only"] is True
     assert registry.history_effects()["task"]["result_reconstructible"] is False
     task_schema_text = json.dumps(

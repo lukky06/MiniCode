@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .events import RepositoryMemoryEventStore
 from .types import MemoryTopicName, contains_sensitive_content, utc_now
@@ -221,7 +221,7 @@ class RepositoryMemoryWorkflowStore:
             return MemoryWorkflowSnapshot.model_validate_json(
                 self.path.read_text(encoding="utf-8")
             )
-        except Exception as exc:
+        except (OSError, ValidationError) as exc:
             raise ValueError(f"Invalid workflow.json: {exc}") from exc
 
     def append_review_record(

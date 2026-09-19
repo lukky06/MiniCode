@@ -82,7 +82,7 @@ class RecordingHook:
 
     def handle(self, event):
         self.seen.append(event.name)
-        return HookDecision.allow(hook_name=self.name)
+        return HookDecision.allow()
 
 
 def _tool_names(tools):

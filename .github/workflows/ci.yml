@@ -3,9 +3,11 @@ name: CI
 on:
   push:
     branches:
+      - master
       - main
   pull_request:
     branches:
+      - master
       - main
 
 permissions:
@@ -43,3 +45,65 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+  tui:
+    name: TUI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: tui/package-lock.json
+
+      - name: Install TUI dependencies
+        working-directory: tui
+        run: npm ci
+
+      - name: Run TUI tests
+        working-directory: tui
+        run: npm test
+
+      - name: Check TUI types
+        working-directory: tui
+        run: npm run check
+
+      - name: Verify packaged TUI runtime
+        working-directory: tui
+        run: |
+          npm run bundle-runtime
+          git diff --exit-code -- ../minicode_harness/tui_runtime/main.mjs
+
+  windows-smoke:
+    name: Windows smoke
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run Windows-sensitive tests
+        run: >-
+          python -m pytest -q
+          tests/test_command_executor.py
+          tests/test_workspace_guard.py
+          tests/tui_bridge/test_launcher.py
+          tests/terminal/test_cli_entry.py
+          tests/runtime/test_cancellation.py

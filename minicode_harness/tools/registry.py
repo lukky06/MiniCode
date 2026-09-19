@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import re
 from threading import Lock
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
 from pydantic import BaseModel, Field, StrictStr, field_validator, model_validator
 
@@ -19,10 +19,8 @@ from minicode_harness.runtime.runtime_tasks import (
 from minicode_harness.policy import (
     CommandPolicyResult,
     RiskLevel,
-    check_command_allowed,
     render_argv,
     render_command_policy_for_prompt,
-    risk_level_for_tool,
 )
 from minicode_harness.skills import Skill, SkillLoader
 from minicode_harness.workspace import WorkspaceAccessError, WorkspaceGuard
@@ -57,7 +55,11 @@ class ReadArgs(BaseModel):
     """Read one explicitly typed resource."""
 
     source: Literal["workspace", "artifact", "memory", "skill", "diff"]
-    target: str | None = Field(None, min_length=1, description="Exact resource name or path.")
+    target: str | None = Field(
+        None,
+        min_length=1,
+        description="Exact name/path; artifact uses artifact_path.",
+    )
     start_line: int | None = Field(None, ge=1, description="Optional 1-based start line.")
     end_line: int | None = Field(None, ge=1, description="Optional 1-based end line.")
 
@@ -103,7 +105,7 @@ class SearchArgs(BaseModel):
     query: str = Field(..., min_length=1, description="Glob pattern or text/regex query.")
     path: str = Field(
         ".",
-        description="Source-relative file or directory to search. '.' means the selected source root.",
+        description="Source-relative file or directory to search. '.' means the selected source root. Artifact: artifact_path.",
     )
     limit: int = Field(50, ge=1, le=2000, description="Maximum results to return.")
     max_depth: int = Field(12, ge=0, le=64, description="Maximum depth for file search.")
@@ -847,25 +849,14 @@ class ToolRegistry:
             if self.runtime_task_registry is None:
                 requires_approval = False
             else:
-                status = self.runtime_task_registry.status(str(normalized["task_id"]))
-                tasks = status.get("tasks") if isinstance(status, dict) else None
+                tasks = self.runtime_task_registry.status(
+                    str(normalized["task_id"])
+                ).get("tasks", [])
                 requires_approval = bool(
-                    isinstance(tasks, list)
-                    and tasks
-                    and tasks[0].get("status") == "running"
+                    tasks and tasks[0]["status"] == "running"
                 )
         if name == "run_command":
-            argv = list(normalized["argv"])
-            classify = getattr(self.command_executor, "classify", None)
-            command_policy = (
-                classify(argv)
-                if callable(classify)
-                else check_command_allowed(
-                    argv,
-                    sandboxed=bool(getattr(self.command_executor, "sandboxed", False)),
-                    rules=tuple(getattr(self.command_executor, "command_rules", ())),
-                )
-            )
+            command_policy = self.command_executor.classify(list(normalized["argv"]))
             risk_level = command_policy.risk_level
             requires_approval = command_policy.requires_approval
         return ToolAdmission(
@@ -877,26 +868,8 @@ class ToolRegistry:
             command_policy=command_policy,
         )
 
-    def risk_level(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None = None,
-    ) -> RiskLevel:
-        if arguments is not None:
-            return self.admit(name, arguments).risk_level
-        tool = self._tools.get(name)
-        if tool is None:
-            return risk_level_for_tool(name)
-        return tool.risk_level
-
-    def requires_approval(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None = None,
-    ) -> bool:
-        if arguments is not None:
-            return self.admit(name, arguments).requires_approval
-        return self.risk_level(name) in {RiskLevel.MEDIUM, RiskLevel.HIGH}
+    def risk_level(self, name: str) -> RiskLevel:
+        return self._tools[name].risk_level
 
     def execute_admitted(
         self,
@@ -907,9 +880,7 @@ class ToolRegistry:
     ) -> Any:
         """Execute one call already validated by ``admit``."""
 
-        tool = self._tools.get(admission.name)
-        if tool is None:
-            raise UnknownToolError(f"Unknown tool: {admission.name}")
+        tool = self._tools[admission.name]
         if not admission.allowed:
             reason = (
                 admission.command_policy.reason
@@ -918,9 +889,7 @@ class ToolRegistry:
             )
             raise PermissionError(reason or "Tool admission denied.")
         if admission.name == "write":
-            parsed = admission.parsed_arguments
-            if not isinstance(parsed, WriteArgs):
-                raise TypeError("write admission did not contain WriteArgs")
+            parsed = cast(WriteArgs, admission.parsed_arguments)
             if parsed.overwrite and expected_file_sha256 is None:
                 target = self._workspace_guard.resolve(parsed.path)
                 if target.exists():
@@ -960,8 +929,6 @@ class ToolRegistry:
 
         name = admission.name
         arguments = admission.arguments
-        if name not in self._tools:
-            raise UnknownToolError(f"Unknown tool: {name}")
         risk_level = admission.risk_level
         if name == "apply_patch":
             patch = str(arguments.get("patch", ""))
@@ -1022,9 +989,7 @@ class ToolRegistry:
                 },
             }
         if name == "run_command":
-            policy_result = admission.command_policy
-            if policy_result is None:
-                raise ValueError("run_command admission is missing command policy")
+            policy_result = cast(CommandPolicyResult, admission.command_policy)
             argv = list(arguments["argv"])
             command = render_argv(argv)
             timeout_seconds = int(arguments["timeout_seconds"])

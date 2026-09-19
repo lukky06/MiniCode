@@ -1,15 +1,11 @@
 import json
 
 from minicode_harness.context import (
-    CURRENT_TOOL_FRONTIER_HEADING,
     CompactionPolicy,
     ContextPreparer,
     PromptBudgetExceeded,
     TokenBudget,
     validate_message_protocol,
-)
-from minicode_harness.context.preparer import (
-    _preclean_history_for_semantic_compaction,
 )
 from minicode_harness.context.session_projection import (
     COMPACTED_TOOL_HEADING,
@@ -355,103 +351,6 @@ def test_soft_compaction_keeps_parallel_and_sequential_multi_file_evidence() -> 
     }
     assert prepared.token_estimate <= preparer.budget.hard_token_limit
     assert validate_message_protocol(prepared.request.messages) == []
-
-
-def test_soft_preclean_preserves_consumed_current_reads_in_frontier() -> None:
-    def read_group(call_id: str, path: str, marker: str) -> list[dict]:
-        return [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "read",
-                            "arguments": json.dumps(
-                                {"source": "workspace", "target": path}
-                            ),
-                        }
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": json.dumps(
-                    {
-                        "path": path,
-                        "content": f"{marker} " * 1_000,
-                    }
-                ),
-            },
-        ]
-
-    first_group = read_group("read_create", "supportdesk/application/create_user.py", "create")
-    second_group = read_group("read_domain", "supportdesk/domain/user.py", "domain")
-    messages = [
-        {"role": "user", "content": "old question"},
-        {"role": "assistant", "content": "old answer"},
-        {"role": "user", "content": "analyze the user lifecycle"},
-        *first_group,
-        *second_group,
-    ]
-
-    first = _preclean_history_for_semantic_compaction(
-        messages,
-        token_limit=2_000,
-        protected_current_token_limit=1_000,
-        tool_effects={"read": {"read_only": True}},
-    )
-
-    assert first is not None
-    rebuilt, details = first
-    frontier = next(
-        str(message.get("content") or "")
-        for message in rebuilt
-        if str(message.get("content") or "").startswith(
-            CURRENT_TOOL_FRONTIER_HEADING
-        )
-    )
-    assert "supportdesk/application/create_user.py" in frontier
-    assert "supportdesk/domain/user.py" not in frontier
-    assert details["current_frontier_tokens"] > 0
-    assert {
-        message.get("tool_call_id")
-        for message in rebuilt
-        if message.get("role") == "tool"
-    } == {"read_domain"}
-
-    third_group = read_group(
-        "read_handler",
-        "supportdesk/application/change_user_role.py",
-        "handler",
-    )
-    second = _preclean_history_for_semantic_compaction(
-        [*rebuilt, *third_group],
-        token_limit=2_000,
-        protected_current_token_limit=1_000,
-        tool_effects={"read": {"read_only": True}},
-    )
-
-    assert second is not None
-    rebuilt_again, _ = second
-    merged_frontier = next(
-        str(message.get("content") or "")
-        for message in rebuilt_again
-        if str(message.get("content") or "").startswith(
-            CURRENT_TOOL_FRONTIER_HEADING
-        )
-    )
-    assert "supportdesk/application/create_user.py" in merged_frontier
-    assert "supportdesk/domain/user.py" in merged_frontier
-    assert {
-        message.get("tool_call_id")
-        for message in rebuilt_again
-        if message.get("role") == "tool"
-    } == {"read_handler"}
-    assert validate_message_protocol(rebuilt_again) == []
 
 
 def test_hard_compaction_prefers_two_current_evidence_groups() -> None:

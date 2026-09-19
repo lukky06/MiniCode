@@ -104,13 +104,19 @@ def test_text_output_sink_prints_compact_tool_status_lines() -> None:
 
     sink.tool_call_started(
         step=1,
+        tool_call_id="read_1",
         tool_name="read",
         arguments={
             "source": "workspace",
             "target": "src/main/java/com/example/Example.java",
         },
     )
-    sink.tool_call_finished(step=1, tool_name="read", status="ok")
+    sink.tool_call_finished(
+        step=1,
+        tool_call_id="read_1",
+        tool_name="read",
+        status="ok",
+    )
 
     assert stream.getvalue() == (
         "[tool] read {source='workspace', target='src/main/java/com/example/Example.java'}\n"

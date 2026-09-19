@@ -162,6 +162,21 @@ def test_default_run_store_filters_by_workspace_and_session(tmp_path, monkeypatc
     assert store.latest_run_id(workspace=second_workspace) == second.run_id
 
 
+def test_run_store_filtering_fails_on_invalid_current_run_metadata(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = RunStore(root=tmp_path / "runs")
+    run = store.create_run(
+        task="broken",
+        workspace=workspace,
+        run_id="run_20260918_001",
+    )
+    (store.path_for(run.run_id) / "run.json").write_text("{", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        store.list_run_ids(workspace=workspace)
+
+
 def test_run_store_updates_terminal_session_state(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

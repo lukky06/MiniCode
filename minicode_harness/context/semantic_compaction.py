@@ -303,10 +303,7 @@ class LLMSemanticHistoryCompactor:
         if self.trace_writer is not None:
             self.trace_writer.write_event(event_type, **payload)
         if self.event_handler is not None:
-            try:
-                self.event_handler(event_type, dict(payload))
-            except Exception:
-                pass
+            self.event_handler(event_type, dict(payload))
 
 
 def _normalize_focus(focus: str | None) -> str:

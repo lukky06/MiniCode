@@ -1,11 +1,11 @@
 import json
 import sys
 
-import minicode_harness.tools.registry as registry_module
 from minicode_harness.hooks import HookDecision, HookEvent, HookManager
 from minicode_harness.loop import AgentLoop
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
+from minicode_harness.policy import check_command_allowed
 from minicode_harness.state import (
     ApprovalDecision,
     ApprovalRequest,
@@ -39,7 +39,7 @@ class RecordingPreToolHook:
     def handle(self, event: HookEvent) -> HookDecision:
         tool_call = event.payload["tool_call"]
         self.arguments.append(dict(tool_call.arguments))
-        return HookDecision.allow(hook_name=self.name)
+        return HookDecision.allow()
 
 
 class RecordingCommandExecutor:
@@ -47,6 +47,15 @@ class RecordingCommandExecutor:
         self.sandboxed = sandboxed
         self.command_rules = ()
         self.calls: list[tuple[list[str], bool]] = []
+        self.policy_calls: list[tuple[str, ...]] = []
+
+    def classify(self, argv):
+        self.policy_calls.append(tuple(argv))
+        return check_command_allowed(
+            argv,
+            sandboxed=self.sandboxed,
+            rules=self.command_rules,
+        )
 
     def execute(
         self,
@@ -130,11 +139,11 @@ def test_tool_registry_builds_approval_previews(tmp_path) -> None:
     assert command_preview["policy_action"] == "require_approval"
     assert command_preview["allowlist_rule"] == "local execution default"
     assert command_preview["timeout_seconds"] == 30
-    assert registry.requires_approval("run_command", command_arguments) is True
+    assert registry.admit("run_command", command_arguments).requires_approval is True
     assert diagnostic_preview["policy_action"] == "require_approval"
     assert diagnostic_preview["policy_category"] == "unknown"
     assert diagnostic_preview["effects"]
-    assert registry.requires_approval("run_command", diagnostic_arguments) is True
+    assert registry.admit("run_command", diagnostic_arguments).requires_approval is True
 
 
 def test_agent_loop_approves_write_file_and_clears_pending_approval(tmp_path) -> None:
@@ -695,22 +704,11 @@ def test_agent_loop_runs_safe_verification_without_approval(tmp_path) -> None:
     ]
 
 
-def test_agent_loop_reuses_one_command_admission_across_governance(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_agent_loop_reuses_one_command_admission_across_governance(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval_client = StaticApprovalClient(ApprovalDecision.APPROVE)
     executor = RecordingCommandExecutor()
-    policy_calls: list[tuple[str, ...]] = []
-    original_check = registry_module.check_command_allowed
-
-    def counting_check(argv, *, sandboxed=False, rules=()):
-        policy_calls.append(tuple(argv))
-        return original_check(argv, sandboxed=sandboxed, rules=rules)
-
-    monkeypatch.setattr(registry_module, "check_command_allowed", counting_check)
     model_client = ScriptedModelClient(
         [
             ModelResponse(
@@ -740,7 +738,7 @@ def test_agent_loop_reuses_one_command_admission_across_governance(
     ).run()
 
     assert result.status == "completed"
-    assert policy_calls == [
+    assert executor.policy_calls == [
         ("python", "-c", "open('diagnostic.txt', 'w').write('x')")
     ]
     assert len(approval_client.requests) == 1

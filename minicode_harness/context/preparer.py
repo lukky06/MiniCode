@@ -203,22 +203,6 @@ class ContextPreparer:
                 task_projection,
             )
 
-        def emergency_hard_projection(
-            source: list[dict[str, Any]],
-        ) -> tuple[
-            list[dict[str, Any]],
-            ContextCompressionEvent,
-            int,
-        ] | None:
-            return _emergency_hard_projection(
-                source,
-                system=system,
-                tools=tools,
-                budget=self.budget,
-                policy=self.policy,
-                tool_effects=tool_effects,
-            )
-
         prepared_messages = projected(state)
         before_tokens = _request_tokens(system, prepared_messages, tools)
         after_argument_compaction = before_tokens
@@ -250,7 +234,7 @@ class ContextPreparer:
                 token_estimate = _request_tokens(system, prepared_messages, tools)
 
         if (
-            token_estimate > self.budget.semantic_token_limit
+            token_estimate > self.budget.soft_token_limit
             and self.semantic_compactor is not None
         ):
             state, event, removed = self._advance_semantic_state(
@@ -268,59 +252,25 @@ class ContextPreparer:
                     token_estimate = _request_tokens(system, prepared_messages, tools)
 
         if token_estimate > self.budget.hard_token_limit:
-            state, event, removed = _advance_execution_state(
+            (
+                state,
+                prepared_messages,
+                token_estimate,
+                hard_events,
+                removed,
+            ) = _fit_under_hard_limit(
                 canonical_messages,
                 state,
+                prepared_messages,
                 system=system,
                 tools=tools,
+                budget=self.budget,
+                policy=self.policy,
+                tool_effects=tool_effects,
                 projection_builder=projected,
-                target_tokens=self.budget.hard_token_limit,
-                phase="hard",
-                protected_current_token_limit=_current_frontier_token_limit(
-                    self.policy,
-                    token_limit=self.budget.prompt_budget,
-                    phase="hard",
-                ),
             )
-            if event is not None:
-                compression_events.append(event)
-                history_groups_compacted += removed
-                prepared_messages = projected(state)
-                token_estimate = _request_tokens(system, prepared_messages, tools)
-
-        if token_estimate > self.budget.hard_token_limit:
-            fallback = emergency_hard_projection(prepared_messages)
-            if fallback is not None:
-                prepared_messages, fallback_event, removed = fallback
-                token_estimate = _request_tokens(system, prepared_messages, tools)
-                compression_events.append(fallback_event)
-                history_groups_compacted += removed
-
-        if token_estimate > self.budget.hard_token_limit:
-            state, event, removed = _advance_execution_state(
-                canonical_messages,
-                state,
-                system=system,
-                tools=tools,
-                projection_builder=projected,
-                target_tokens=self.budget.hard_token_limit,
-                phase="hard",
-                protect_latest_tool_group=False,
-                protected_current_token_limit=0,
-            )
-            if event is not None:
-                compression_events.append(event)
-                history_groups_compacted += removed
-                prepared_messages = projected(state)
-                token_estimate = _request_tokens(system, prepared_messages, tools)
-
-        if token_estimate > self.budget.hard_token_limit:
-            fallback = emergency_hard_projection(prepared_messages)
-            if fallback is not None:
-                prepared_messages, fallback_event, removed = fallback
-                token_estimate = _request_tokens(system, prepared_messages, tools)
-                compression_events.append(fallback_event)
-                history_groups_compacted += removed
+            compression_events.extend(hard_events)
+            history_groups_compacted += removed
 
         if token_estimate > self.budget.hard_token_limit:
             raise PromptBudgetExceeded(
@@ -478,7 +428,7 @@ class ContextPreparer:
             )
             if execution_summary.strip():
                 rendered = f"{rendered}\n\n{execution_summary}"
-        except Exception as exc:
+        except SemanticHistoryCompactionError as exc:
             return (
                 attempted_state,
                 ContextCompressionEvent(
@@ -661,7 +611,7 @@ def render_tool_result_message(observation: ContextObservation) -> str:
     """Render a tool result without duplicating tool-call or payload fields."""
 
     content = observation.content.strip()
-    metadata = observation.metadata or {}
+    metadata = observation.metadata
     status = str(metadata.get("status") or "ok")
     if status == "ok":
         return content
@@ -712,7 +662,6 @@ def render_tool_result_message(observation: ContextObservation) -> str:
         "workspace_generation",
         "timed_out",
         "repeat_count",
-        "suggested_command",
         "approval_decision",
         "risk_level",
     ):
@@ -722,6 +671,82 @@ def render_tool_result_message(observation: ContextObservation) -> str:
     if observation.artifact_path:
         payload["artifact_path"] = observation.artifact_path
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+def _fit_under_hard_limit(
+    canonical_messages: list[dict[str, Any]],
+    state: SessionCompactionState,
+    prepared_messages: list[dict[str, Any]],
+    *,
+    system: str,
+    tools: list[dict[str, Any]],
+    budget: TokenBudget,
+    policy: CompactionPolicy,
+    tool_effects: dict[str, dict[str, bool]] | None,
+    projection_builder: Callable[[SessionCompactionState], list[dict[str, Any]]],
+) -> tuple[
+    SessionCompactionState,
+    list[dict[str, Any]],
+    int,
+    list[ContextCompressionEvent],
+    int,
+]:
+    """Fit one projected request under the hard limit with bounded deterministic fallbacks."""
+
+    current_messages = prepared_messages
+    token_estimate = _request_tokens(system, current_messages, tools)
+    events: list[ContextCompressionEvent] = []
+    removed_total = 0
+
+    for protect_latest, protected_current_token_limit in (
+        (
+            True,
+            _current_frontier_token_limit(
+                policy,
+                token_limit=budget.prompt_budget,
+                phase="hard",
+            ),
+        ),
+        (False, 0),
+    ):
+        if token_estimate <= budget.hard_token_limit:
+            break
+
+        state, event, removed = _advance_execution_state(
+            canonical_messages,
+            state,
+            system=system,
+            tools=tools,
+            projection_builder=projection_builder,
+            target_tokens=budget.hard_token_limit,
+            phase="hard",
+            protect_latest_tool_group=protect_latest,
+            protected_current_token_limit=protected_current_token_limit,
+        )
+        if event is not None:
+            events.append(event)
+            removed_total += removed
+            current_messages = projection_builder(state)
+            token_estimate = _request_tokens(system, current_messages, tools)
+
+        if token_estimate <= budget.hard_token_limit:
+            break
+
+        fallback = _emergency_hard_projection(
+            current_messages,
+            system=system,
+            tools=tools,
+            budget=budget,
+            policy=policy,
+            tool_effects=tool_effects,
+        )
+        if fallback is not None:
+            current_messages, fallback_event, removed = fallback
+            token_estimate = _request_tokens(system, current_messages, tools)
+            events.append(fallback_event)
+            removed_total += removed
+
+    return state, current_messages, token_estimate, events, removed_total
 
 
 def _emergency_hard_projection(
@@ -949,93 +974,6 @@ def _apply_task_projection(
     )
 
 
-def _task_cleanup_details(*, phase: str) -> dict[str, Any]:
-    return {
-        "phase": phase,
-        "strategy": "task_protocol_cleanup",
-        "removed_groups": 0,
-        "removed_tokens": 0,
-        "retained_groups": 0,
-        "protected_current_groups": 0,
-        "protected_current_tokens": 0,
-        "compressible_current_groups": 0,
-        "effective_token_limit": 0,
-        "semantic_turns_retained": 0,
-        "semantic_message_char_limit": None,
-        "execution_record_tokens": 0,
-        "omitted_execution_entries": 0,
-        "active_user_anchored": True,
-    }
-
-
-def _bounded_semantic_context_groups(
-    groups: list[MessageGroup],
-    *,
-    token_limit: int,
-) -> list[MessageGroup]:
-    """Keep one complete context-only Tool suffix under an auxiliary-call budget."""
-
-    if not groups:
-        return []
-    limit = max(64, token_limit)
-    if _groups_tokens(groups) <= limit:
-        return deepcopy(groups)
-
-    for char_limit in (4_000, 2_000, 1_000, 500, 240):
-        candidate = deepcopy(groups)
-        for group in candidate:
-            for message in group:
-                content = message.get("content")
-                if isinstance(content, str) and len(content) > char_limit:
-                    message["content"] = _head_tail_compact(
-                        content,
-                        max_chars=char_limit,
-                    )
-        if _groups_tokens(candidate) <= limit:
-            return candidate
-
-    frontier, _ = compact_current_tool_frontier(
-        groups,
-        max_chars=max(320, limit * 4),
-    )
-    if not frontier.strip():
-        return []
-    return [[{"role": "assistant", "content": frontier}]]
-
-
-
-def _partition_unconsumed_current_group(
-    current_groups: list[MessageGroup],
-) -> tuple[list[MessageGroup], list[MessageGroup]]:
-    """Keep the newest returned Tool Group exact despite trailing synthetic records."""
-
-    returned_indexes = [
-        index
-        for index, group in enumerate(current_groups)
-        if _is_returned_tool_protocol_group(group)
-    ]
-    if not returned_indexes:
-        return [], list(current_groups)
-    unconsumed_start = returned_indexes[-1]
-    return (
-        list(current_groups[:unconsumed_start]),
-        list(current_groups[unconsumed_start:]),
-    )
-
-
-def _semantic_current_partition(
-    current_groups: list[MessageGroup],
-    *,
-    protected_token_limit: int,
-) -> tuple[list[MessageGroup], list[MessageGroup]]:
-    """Protect the token-bounded current Tool frontier."""
-
-    return _split_current_groups_for_compaction(
-        current_groups,
-        protected_token_limit=protected_token_limit,
-    )
-
-
 def _has_semantic_source(groups: list[MessageGroup]) -> bool:
     for group in groups:
         for message in group:
@@ -1049,86 +987,6 @@ def _has_semantic_source(groups: list[MessageGroup]) -> bool:
             ):
                 return True
     return False
-
-
-def _preclean_history_for_semantic_compaction(
-    messages: list[dict[str, Any]],
-    *,
-    token_limit: int,
-    protected_current_token_limit: int,
-    tool_effects: dict[str, dict[str, bool]] | None,
-    task_projection: TaskProjection | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    """Remove tool noise while preserving all historical semantic dialogue."""
-
-    groups = group_messages(messages)
-    active_index = find_latest_user_group_index(groups)
-    if active_index is None:
-        return None
-
-    active_group = groups[active_index : active_index + 1]
-    historical_groups = groups[:active_index]
-    semantic_groups = [
-        group
-        for group in historical_groups
-        if _has_semantic_source([group])
-    ]
-    removed_historical_groups = [
-        group
-        for group in historical_groups
-        if not _has_semantic_source([group])
-    ]
-    current_groups = groups[active_index + 1 :]
-    removed_current_groups, protected_current_groups = (
-        _split_current_groups_for_compaction(
-            current_groups,
-            protected_token_limit=protected_current_token_limit,
-        )
-    )
-    removed_groups = [*removed_historical_groups, *removed_current_groups]
-    if not removed_groups:
-        return None
-
-    execution_summary, omitted = compact_execution_history_with_details(
-        removed_groups,
-        max_chars=MAX_EXECUTION_RECORD_CHARS,
-        tool_effects=tool_effects,
-    )
-    current_frontier, frontier_omitted = compact_current_tool_frontier(
-        removed_current_groups,
-        max_chars=max(_CURRENT_TOOL_FRONTIER_CHAR_LIMITS),
-    )
-    rebuilt: list[dict[str, Any]] = []
-    if execution_summary.strip():
-        rebuilt.append({"role": "assistant", "content": execution_summary})
-    rebuilt.extend(flatten_groups(semantic_groups))
-    rebuilt.extend(flatten_groups(active_group))
-    if current_frontier.strip():
-        rebuilt.append({"role": "assistant", "content": current_frontier})
-    rebuilt.extend(flatten_groups(protected_current_groups))
-    rebuilt = _apply_task_projection(rebuilt, task_projection)
-    return rebuilt, {
-        "phase": "soft",
-        "strategy": "deterministic_semantic_preclean",
-        "removed_groups": len(removed_groups),
-        "removed_tokens": _groups_tokens(removed_groups),
-        "retained_groups": len(protected_current_groups),
-        "protected_current_groups": len(protected_current_groups),
-        "protected_current_tokens": _groups_tokens(protected_current_groups),
-        "compressible_current_groups": len(removed_current_groups),
-        "effective_token_limit": token_limit,
-        "semantic_turns_retained": sum(
-            1
-            for group in semantic_groups
-            if any(message.get("role") == "user" for message in group)
-        ),
-        "semantic_message_char_limit": None,
-        "execution_record_tokens": estimate_tokens(execution_summary),
-        "omitted_execution_entries": omitted,
-        "current_frontier_tokens": estimate_tokens(current_frontier),
-        "omitted_current_frontier_entries": frontier_omitted,
-        "active_user_anchored": True,
-    }
 
 
 def _select_compaction_groups(

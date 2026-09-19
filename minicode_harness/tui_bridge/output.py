@@ -147,11 +147,11 @@ class JsonlOutputSink:
         step: int,
         tool_name: str,
         arguments: dict[str, Any],
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> None:
         self.writer.emit(
             ToolStarted(
-                id=tool_call_id or f"fallback:{step}:{tool_name}",
+                id=tool_call_id,
                 step=step,
                 tool=tool_name,
                 target=_tool_target(tool_name, arguments),
@@ -164,7 +164,7 @@ class JsonlOutputSink:
         step: int,
         tool_name: str,
         status: str,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -194,7 +194,7 @@ class JsonlOutputSink:
             diff_truncated = bool(safe_metadata.get("diff_truncated", False))
         self.writer.emit(
             ToolFinished(
-                id=tool_call_id or f"fallback:{step}:{tool_name}",
+                id=tool_call_id,
                 step=step,
                 tool=tool_name,
                 status=status,

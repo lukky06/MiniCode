@@ -8,7 +8,7 @@ import pytest
 
 from minicode_harness.context import SessionCompactionState
 import minicode_harness.state.session_memory as session_memory_module
-from minicode_harness.state import ReplSessionStore
+from minicode_harness.state import ReplSessionMemory, ReplSessionStore
 
 
 def test_latest_session_prefers_later_creation_when_timestamps_tie(
@@ -109,28 +109,28 @@ def test_session_partial_fork_uses_completed_run_boundary(tmp_path: Path) -> Non
     assert forked.name is None
 
 
-def test_session_full_fork_supports_legacy_turns_but_partial_requires_boundary(
+def test_session_rejects_completed_assistant_turn_without_history_boundary(
     tmp_path: Path,
 ) -> None:
+    with pytest.raises(ValueError, match="history_length"):
+        ReplSessionMemory(
+            workspace=str(tmp_path.resolve()),
+            dialogue=[
+                {
+                    "role": "assistant",
+                    "content": "old answer",
+                    "run_id": "run_old",
+                }
+            ],
+        )
+
+
+def test_session_list_fails_on_invalid_current_session(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     store = ReplSessionStore(tmp_path / "data")
     session = store.create(workspace)
-    session.replace_message_history(
-        [
-            {"role": "user", "content": "legacy"},
-            {"role": "assistant", "content": "legacy answer"},
-        ]
-    )
-    session.add_user_turn("legacy", run_id="run_legacy")
-    session.add_assistant_turn("legacy answer", run_id="run_legacy")
+    store.session_path(workspace, session.session_id).write_text("{", encoding="utf-8")
 
-    full = store.fork(session)
-    assert full.load_message_history() == session.load_message_history()
-    assert [turn.content for turn in full.dialogue] == [
-        "legacy",
-        "legacy answer",
-    ]
-
-    with pytest.raises(ValueError, match="boundary"):
-        store.fork(session, through_turn=1)
+    with pytest.raises(ValueError):
+        store.list(workspace)

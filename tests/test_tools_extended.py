@@ -261,7 +261,6 @@ def test_registry_exposes_precise_edit_with_medium_risk(tmp_path: Path) -> None:
     assert "find_files" not in names
     assert "edit_file" not in names
     assert registry.risk_level("edit") == RiskLevel.MEDIUM
-    assert registry.requires_approval("edit")
 
     source = workspace / "app.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
@@ -297,7 +296,6 @@ def test_registry_keeps_worktree_schema_stable_and_returns_unavailable_without_h
         "reason": "worktree_workers_disabled",
     }
     assert enabled.risk_level("delegate_worktree") == RiskLevel.MEDIUM
-    assert enabled.requires_approval("delegate_worktree")
 
 
 def test_compact_tool_schema_for_provider_preserves_validation_contract() -> None:
@@ -395,6 +393,28 @@ def test_normal_write_registry_exposes_exact_stable_eleven_tool_surface(
     source_schema = search_schema["function"]["parameters"]["properties"]["source"]
     assert source_schema["enum"] == ["workspace", "artifact"]
     assert source_schema["default"] == "workspace"
+
+
+def test_read_and_search_schemas_explain_artifact_followup(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = ToolRegistry(
+        str(workspace),
+        enable_write=False,
+        artifact_dir=str(tmp_path / "artifacts"),
+    )
+    schemas = {
+        schema["function"]["name"]: schema["function"]
+        for schema in registry.schemas()
+    }
+
+    read_schema = schemas["read"]
+    read_properties = read_schema["parameters"]["properties"]
+    search_schema = schemas["search"]
+    search_properties = search_schema["parameters"]["properties"]
+
+    assert "artifact_path" in read_properties["target"]["description"]
+    assert "artifact_path" in search_properties["path"]["description"]
 
 
 def test_registry_compacts_provider_schemas_by_at_least_ten_percent(

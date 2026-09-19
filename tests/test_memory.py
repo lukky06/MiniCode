@@ -185,7 +185,7 @@ def test_repl_session_keeps_dialogue_for_history_display(tmp_path) -> None:
     session = ReplSessionMemory(workspace=str(tmp_path.resolve()))
 
     session.add_user_turn("Explain README", run_id="run_1")
-    session.add_assistant_turn("README summary", run_id="run_1")
+    session.add_assistant_turn("README summary", history_length=0, run_id="run_1")
 
     assert [turn.role for turn in session.dialogue] == ["user", "assistant"]
     assert [turn.run_id for turn in session.dialogue] == ["run_1", "run_1"]

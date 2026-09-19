@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import time
-from typing import Any
+from typing import Any, cast
 
 from minicode_harness.models import ModelResponse, NormalizedToolCall
 from minicode_harness.runtime.progress_policy import ProgressGuidance
@@ -173,7 +173,7 @@ class ToolBatchExecutor:
             loop._emit_tool_call_finished(step, outcome.observation)
         loop.observations.append(outcome.observation)
         loop._append_tool_result_message(tool_call, outcome.observation)
-        loop._record_modified_files(outcome.modified_files or [])
+        loop._record_modified_files(outcome.modified_files)
         loop._advance_verification_state(tool_call, outcome)
         guidance = loop.progress_policy.after_tool(
             step=step,
@@ -271,4 +271,4 @@ class ToolBatchExecutor:
             count=len(tool_calls),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        return [outcome for outcome in outcomes if outcome is not None]
+        return cast(list[ToolExecutionOutcome], outcomes)

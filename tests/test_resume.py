@@ -1,12 +1,15 @@
 import json
 import sys
 
+import pytest
+
 from minicode_harness.context import RunState, VerificationState
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
 import minicode_harness.resume as resume_module
 from minicode_harness.resume import latest_recoverable_run_id, resume_run
 from minicode_harness.runtime.steering import SteeringQueue
+from minicode_harness.policy import check_command_allowed
 from minicode_harness.tools import CommandRunResult
 from minicode_harness.state import (
     ApprovalDecision,
@@ -78,6 +81,47 @@ def test_latest_recoverable_run_requires_checkpoint_and_skips_completed(
     ) == recoverable.run_id
 
 
+def test_latest_recoverable_run_fails_on_invalid_current_checkpoint(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs")
+    older = run_store.create_run(
+        task="older",
+        workspace=workspace,
+        run_id="run_20260918_001",
+    )
+    CheckpointStore(run_store.path_for(older.run_id) / "checkpoints").save(
+        RunCheckpoint(
+            run_id=older.run_id,
+            step=1,
+            task=older.task,
+            workspace=older.workspace,
+            status="stopped",
+        )
+    )
+    newer = run_store.create_run(
+        task="newer",
+        workspace=workspace,
+        run_id="run_20260918_002",
+    )
+    checkpoint_store = CheckpointStore(
+        run_store.path_for(newer.run_id) / "checkpoints"
+    )
+    checkpoint_store.save(
+        RunCheckpoint(
+            run_id=newer.run_id,
+            step=1,
+            task=newer.task,
+            workspace=newer.workspace,
+            status="running",
+        )
+    )
+    checkpoint_store.latest_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        latest_recoverable_run_id(run_store=run_store, workspace=workspace)
+
+
 class ScriptedModelClient(ModelClient):
     def __init__(self, responses: list[ModelResponse]) -> None:
         self.responses = responses
@@ -90,9 +134,13 @@ class ScriptedModelClient(ModelClient):
 
 class RecordingSandboxCommandExecutor:
     sandboxed = True
+    command_rules = ()
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+
+    def classify(self, argv):
+        return check_command_allowed(argv, sandboxed=True, rules=self.command_rules)
 
     def execute(
         self,

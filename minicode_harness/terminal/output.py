@@ -129,10 +129,9 @@ class TerminalOutputSink:
         step: int,
         tool_name: str,
         arguments: dict[str, Any],
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> None:
-        key = tool_call_id or _fallback_key(step, tool_name)
-        self._pending[key] = _PendingToolCall(
+        self._pending[tool_call_id] = _PendingToolCall(
             step=step,
             tool_name=tool_name,
             arguments=dict(arguments),
@@ -148,13 +147,12 @@ class TerminalOutputSink:
         step: int,
         tool_name: str,
         status: str,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        del status, summary, metadata
-        key = tool_call_id or _fallback_key(step, tool_name)
-        self._pending.pop(key, None)
+        del step, tool_name, status, summary, metadata
+        self._pending.pop(tool_call_id, None)
         self._update_tool_status()
         self._refresh_status()
 
@@ -281,7 +279,3 @@ def _aggregate_activity_target(activity: str, count: int) -> str:
         "delegating": "tasks",
     }.get(activity, "tools")
     return f"{count} {noun}"
-
-
-def _fallback_key(step: int, tool_name: str) -> str:
-    return f"{step}:{tool_name}"

@@ -224,23 +224,22 @@ def test_repository_structure_card_contains_only_high_density_hints(tmp_path) ->
     assert ": none" not in card
 
 
-def test_token_budget_orders_soft_semantic_and_emergency_hard_limits() -> None:
+def test_token_budget_exposes_only_soft_and_hard_compaction_limits() -> None:
     budget = TokenBudget(context_budget=32_000, reserved_output=6_000)
 
     assert budget.prompt_budget == 26_000
     assert budget.soft_token_limit == 20_800
-    assert budget.semantic_token_limit == 22_880
     assert budget.hard_token_limit == 24_700
+    assert "semantic_limit" not in TokenBudget.model_fields
+    assert not hasattr(budget, "semantic_token_limit")
 
     constrained = TokenBudget(
         context_budget=10_000,
         reserved_output=0,
         soft_limit=0.20,
-        semantic_limit=0.88,
         hard_limit=0.50,
     )
-    assert constrained.soft_token_limit < constrained.semantic_token_limit
-    assert constrained.semantic_token_limit < constrained.hard_token_limit
+    assert constrained.soft_token_limit < constrained.hard_token_limit
 
 
 def test_context_builder_keeps_all_skill_catalog_entries_during_soft_compaction(tmp_path) -> None:

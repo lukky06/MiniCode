@@ -381,9 +381,9 @@ def run_command(
     guard = WorkspaceGuard(workspace)
     policy_result = check_command_allowed(argv, sandboxed=False, rules=command_rules)
     if not policy_result.allowed:
-        raise PermissionError(policy_result.reason or "Command is not allowed.")
+        raise PermissionError(policy_result.reason)
     if policy_result.requires_approval and not approval_granted:
-        raise PermissionError(policy_result.reason or "Command requires approval.")
+        raise PermissionError(policy_result.reason)
 
     normalized_argv = list(policy_result.argv)
     command = render_argv(normalized_argv)

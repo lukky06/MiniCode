@@ -13,7 +13,6 @@ class TokenBudget(BaseModel):
     context_budget: int = 32000
     reserved_output: int = 6000
     soft_limit: float = 0.80
-    semantic_limit: float = 0.88
     hard_limit: float = 0.95
 
     @property
@@ -23,16 +22,6 @@ class TokenBudget(BaseModel):
     @property
     def soft_token_limit(self) -> int:
         return int(self.prompt_budget * self.soft_limit)
-
-    @property
-    def semantic_token_limit(self) -> int:
-        """Proactive semantic-compaction threshold below emergency Hard."""
-
-        effective_limit = min(
-            max(self.soft_limit, self.semantic_limit),
-            self.hard_limit - 0.01,
-        )
-        return int(self.prompt_budget * max(0.0, effective_limit))
 
     @property
     def hard_token_limit(self) -> int:

@@ -506,7 +506,7 @@ def _summarize_subagent_observation(
     arguments: dict[str, Any],
     observation: ContextObservation,
 ) -> str:
-    metadata = observation.metadata or {}
+    metadata = observation.metadata
     status = str(metadata.get("status") or "ok")
     if tool_name == "search":
         return _summarize_search_observation(arguments, metadata, status)

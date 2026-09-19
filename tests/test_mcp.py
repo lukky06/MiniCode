@@ -61,7 +61,6 @@ def test_destructive_mcp_tool_uses_existing_approval_risk(tmp_path) -> None:
     registry = ToolRegistry(str(tmp_path), mcp_manager=MCPManager([server]))
 
     assert registry.risk_level("mcp__deploy__release") == RiskLevel.HIGH
-    assert registry.requires_approval("mcp__deploy__release")
     preview = registry.preview_admitted(
         registry.admit("mcp__deploy__release", {"environment": "staging"})
     )
@@ -78,7 +77,6 @@ def test_missing_mcp_annotations_default_to_side_effecting(tmp_path) -> None:
     name = "mcp__tickets__create"
 
     assert registry.risk_level(name) == RiskLevel.MEDIUM
-    assert registry.requires_approval(name)
     assert registry.history_effects()[name] == {
         "read_only": False,
         "destructive": False,

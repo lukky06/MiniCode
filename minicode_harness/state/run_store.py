@@ -230,10 +230,7 @@ class RunStore:
         )
         matched: list[str] = []
         for run_id in run_ids:
-            try:
-                session = self.load_session(run_id)
-            except (FileNotFoundError, OSError, ValueError):
-                continue
+            session = self.load_session(run_id)
             if (
                 workspace_key is not None
                 and self._workspace_key(session.workspace) != workspace_key

@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .checkpoint import digest_workspace_files
 
@@ -203,7 +203,7 @@ class ExecutionJournal:
                 continue
             try:
                 events.append(ExecutionJournalEvent.model_validate_json(line))
-            except Exception:
+            except ValidationError:
                 if index == len(lines) - 1 and not raw.endswith("\n"):
                     break
                 raise

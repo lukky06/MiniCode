@@ -949,6 +949,7 @@ class BenchmarkScenarioRunner:
                     f"Run finished with status {agent_result.status}: "
                     f"{agent_result.stop_reason}"
                 ),
+                history_length=len(session_memory.load_message_history()),
                 run_id=run_id,
             )
             if (
@@ -1516,7 +1517,6 @@ def _scenario_context_components(
         context_budget=context_budget,
         reserved_output=reserved_output,
         soft_limit=0.80,
-        semantic_limit=0.88,
         hard_limit=0.95,
     )
     semantic_compactor = None

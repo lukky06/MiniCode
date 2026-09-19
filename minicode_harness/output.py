@@ -25,29 +25,25 @@ class ContextUsage:
 
 
 def emit_semantic_compaction_event(
-    output_sink: Any,
+    output_sink: "OutputSink",
     event_type: str,
     payload: dict[str, Any],
 ) -> None:
     """Forward one semantic-compaction lifecycle event to presentation sinks."""
 
     if event_type == "semantic_compaction_started":
-        handler = getattr(output_sink, "context_compaction_started", None)
-        if callable(handler):
-            handler(kind="semantic")
+        output_sink.context_compaction_started(kind="semantic")
         return
     if event_type not in {
         "semantic_compaction_completed",
         "semantic_compaction_failed",
     }:
         return
-    handler = getattr(output_sink, "context_compaction_finished", None)
-    if callable(handler):
-        handler(
-            kind="semantic",
-            duration_ms=max(0, int(payload.get("duration_ms") or 0)),
-            success=event_type == "semantic_compaction_completed",
-        )
+    output_sink.context_compaction_finished(
+        kind="semantic",
+        duration_ms=max(0, int(payload.get("duration_ms") or 0)),
+        success=event_type == "semantic_compaction_completed",
+    )
 
 
 class StreamHandler(Protocol):
@@ -87,7 +83,7 @@ class OutputSink(StreamHandler, Protocol):
         step: int,
         tool_name: str,
         arguments: dict[str, Any],
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> None:
         """Called when the model requests a tool call."""
 
@@ -97,7 +93,7 @@ class OutputSink(StreamHandler, Protocol):
         step: int,
         tool_name: str,
         status: str,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -137,7 +133,7 @@ class NullOutputSink:
         step: int,
         tool_name: str,
         arguments: dict[str, Any],
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> None:
         pass
 
@@ -147,7 +143,7 @@ class NullOutputSink:
         step: int,
         tool_name: str,
         status: str,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -288,7 +284,7 @@ class TextOutputSink:
         step: int,
         tool_name: str,
         arguments: dict[str, Any],
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> None:
         self._write_line(f"[tool] {tool_name} {_format_tool_arguments(arguments)}")
 
@@ -298,7 +294,7 @@ class TextOutputSink:
         step: int,
         tool_name: str,
         status: str,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
         summary: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:

@@ -175,16 +175,8 @@ class RequestOrchestrator:
         candidate_service = RepositoryMemoryCandidateService(self.repository_memory)
         auto_published = 0
         for candidate_id in reviewed.candidate_ids:
-            try:
-                if candidate_service.auto_approve(candidate_id) is not None:
-                    auto_published += 1
-            except Exception as exc:
-                if self.trace_writer is not None:
-                    self.trace_writer.write_event(
-                        "memory_auto_publish_failed",
-                        candidate_id=candidate_id,
-                        reason=f"{type(exc).__name__}: {exc}",
-                    )
+            if candidate_service.auto_approve(candidate_id) is not None:
+                auto_published += 1
         if self.trace_writer is not None:
             self.trace_writer.write_event(
                 "memory_auto_review_completed",

@@ -81,3 +81,15 @@ def test_worker_worktree_does_not_reopen_existing_name(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError):
         manager.create_worker(repository, "worker-0001")
+
+
+def test_worktree_list_fails_on_invalid_current_manifest(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repo")
+    data_dir = tmp_path / "data"
+    manager = GitWorktreeManager(data_dir)
+    manager.open_or_create_session(repository, "broken")
+    manifest_path = next(data_dir.rglob("*.json"))
+    manifest_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        manager.list(repository)

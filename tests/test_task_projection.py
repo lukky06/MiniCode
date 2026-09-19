@@ -391,7 +391,6 @@ def test_semantic_compaction_excludes_task_protocol_and_restores_projection() ->
             context_budget=16_000,
             reserved_output=0,
             soft_limit=0.20,
-            semantic_limit=0.38,
             hard_limit=0.75,
         ),
         semantic_compactor=compactor,
