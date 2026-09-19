@@ -5,7 +5,7 @@ from minicode_harness.hooks import HookDecision, HookEvent, HookManager
 from minicode_harness.loop import AgentLoop
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
-from minicode_harness.policy import check_command_allowed
+from minicode_harness.policy import ExecutionMode, check_command_allowed
 from minicode_harness.state import (
     ApprovalDecision,
     ApprovalRequest,
@@ -184,6 +184,7 @@ def test_agent_loop_approves_write_file_and_clears_pending_approval(tmp_path) ->
         trace_writer=TraceWriter(trace_path),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
         approval_client=approval_client,
         approval_store=approval_store,
     ).run()
@@ -341,6 +342,7 @@ def test_agent_loop_rejects_write_file_without_modifying_workspace(tmp_path) -> 
         trace_writer=TraceWriter(trace_path),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
         approval_client=StaticApprovalClient(ApprovalDecision.REJECT),
         approval_store=approval_store,
     ).run()
@@ -349,44 +351,6 @@ def test_agent_loop_rejects_write_file_without_modifying_workspace(tmp_path) -> 
     assert result.stop_reason == "final_text"
     assert not (workspace / "README.md").exists()
     assert approval_store.load_pending() is None
-
-
-def test_agent_loop_skips_write_file_without_modifying_workspace(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    trace_path = tmp_path / "skip" / "trace.jsonl"
-    model_client = ScriptedModelClient(
-        [
-            ModelResponse(
-                tool_calls=[
-                    NormalizedToolCall(
-                        id="call_1",
-                        name="write",
-                        arguments={"path": "README.md", "content": "hello\n"},
-                    )
-                ]
-            ),
-            ModelResponse(final_text="The write was skipped, so no file was changed."),
-        ]
-    )
-
-    result = AgentLoop(
-        task="Write README",
-        workspace=workspace,
-        model_client=model_client,
-        trace_writer=TraceWriter(trace_path),
-        memory_store=ProjectMemoryStore(tmp_path / "memory"),
-        enable_write=True,
-        approval_client=StaticApprovalClient(ApprovalDecision.SKIP),
-    ).run()
-
-    assert result.status == "completed"
-    assert not (workspace / "README.md").exists()
-    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    resolved = [event for event in events if event["type"] == "approval_resolved"]
-    results = [event for event in events if event["type"] == "tool_result"]
-    assert resolved[0]["decision"] == "skip"
-    assert results[0]["status"] == "approval_skip"
 
 
 def test_explicit_approval_abort_stops_the_run(tmp_path) -> None:
@@ -413,6 +377,7 @@ def test_explicit_approval_abort_stops_the_run(tmp_path) -> None:
         trace_writer=TraceWriter(tmp_path / "abort" / "trace.jsonl"),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
         approval_client=StaticApprovalClient(ApprovalDecision.ABORT),
     ).run()
 
@@ -456,6 +421,7 @@ def test_repeated_identical_denied_tool_call_is_not_prompted_again(tmp_path) -> 
         trace_writer=TraceWriter(tmp_path / "run" / "trace.jsonl"),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
         approval_client=approval_client,
     ).run()
 

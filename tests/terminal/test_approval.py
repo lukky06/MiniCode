@@ -23,8 +23,6 @@ def _console() -> tuple[Console, StringIO]:
     [
         ("y", ApprovalDecision.APPROVE),
         ("n", ApprovalDecision.REJECT),
-        ("s", ApprovalDecision.SKIP),
-        ("a", ApprovalDecision.ABORT),
     ],
 )
 def test_terminal_approval_preserves_runtime_decision_semantics(answer, expected) -> None:
@@ -62,7 +60,7 @@ def test_terminal_approval_can_grant_command_for_session() -> None:
         tool_call_id="call_session",
         tool_name="run_command",
         risk_level="high",
-        can_approve_session=True,
+        session_scope="python script.py",
         preview={"command": "python script.py"},
     )
 

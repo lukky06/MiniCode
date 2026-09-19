@@ -54,7 +54,7 @@ class JsonlApprovalClient:
                     tool=request.tool_name,
                     summary=summary,
                     details=details,
-                    can_approve_session=request.can_approve_session,
+                    session_scope=request.session_scope,
                 )
             )
 
@@ -126,10 +126,7 @@ def _approval_copy(request: ApprovalRequest) -> tuple[str, str]:
         else:
             summary = request.tool_name
 
-    safe_details = {
-        "risk_level": request.risk_level,
-        "preview": preview,
-    }
+    safe_details = {"preview": preview}
     details = json.dumps(
         safe_details,
         ensure_ascii=False,

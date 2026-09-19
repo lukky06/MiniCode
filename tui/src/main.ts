@@ -14,13 +14,9 @@ const backend = new BackendClient({
   provider: process.env.MINICODE_PROVIDER,
   model: process.env.MINICODE_MODEL,
   writeEnabled: process.env.MINICODE_TUI_NO_WRITE !== "1",
-  approvalPolicy: process.env.MINICODE_TUI_APPROVAL_POLICY as
-    | "on-request"
-    | "never"
-    | undefined,
-  permissionMode: process.env.MINICODE_TUI_PERMISSION_MODE as
-    | "read-only"
-    | "workspace-write"
+  executionMode: process.env.MINICODE_TUI_EXECUTION_MODE as
+    | "default"
+    | "review-changes"
     | "full-access"
     | undefined,
   collaborationMode: process.env.MINICODE_TUI_COLLABORATION_MODE as

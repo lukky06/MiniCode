@@ -12,7 +12,7 @@ import sys
 from threading import Lock, Thread
 from typing import Callable, TextIO
 
-from minicode_harness.policy import ApprovalPolicy, CommandRule, PermissionMode
+from minicode_harness.policy import CommandRule, ExecutionMode
 from minicode_harness.runtime import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.run_executor import (
@@ -389,14 +389,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider", default="qwen")
     parser.add_argument("--model")
     parser.add_argument(
-        "--approval-policy",
-        choices=tuple(item.value for item in ApprovalPolicy),
-        default=ApprovalPolicy.ON_REQUEST.value,
-    )
-    parser.add_argument(
-        "--permission-mode",
-        choices=tuple(item.value for item in PermissionMode),
-        default=PermissionMode.READ_ONLY.value,
+        "--execution-mode",
+        choices=tuple(item.value for item in ExecutionMode),
+        default=ExecutionMode.DEFAULT.value,
     )
     parser.add_argument(
         "--mode",
@@ -464,8 +459,7 @@ def _build_backend(
     command_rules = _command_rules_from_environment()
     session_settings = TerminalSessionSettings(
         collaboration_mode=CollaborationMode(args.mode),
-        permission_mode=PermissionMode(args.permission_mode),
-        approval_policy=ApprovalPolicy(args.approval_policy),
+        execution_mode=ExecutionMode(args.execution_mode),
         sandbox_mode=SandboxMode(args.sandbox_mode),
         sandbox_image=args.sandbox_image,
     )
@@ -477,8 +471,7 @@ def _build_backend(
             provider=args.provider,
             model=args.model,
             write_enabled=not args.no_write,
-            approval_policy=session_settings.approval_policy,
-            permission_mode=session_settings.permission_mode,
+            execution_mode=session_settings.execution_mode,
             sandbox_mode=session_settings.sandbox_mode,
             sandbox_image=(
                 session_settings.sandbox_image
@@ -500,8 +493,7 @@ def _build_backend(
         provider=args.provider,
         model=args.model,
         write_enabled=not args.no_write,
-        approval_policy=ApprovalPolicy(args.approval_policy),
-        permission_mode=PermissionMode(args.permission_mode),
+        execution_mode=ExecutionMode(args.execution_mode),
         sandbox_mode=SandboxMode(args.sandbox_mode),
         sandbox_image=args.sandbox_image,
         session_settings=session_settings,

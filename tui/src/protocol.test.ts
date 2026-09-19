@@ -19,8 +19,8 @@ test("server JSONL parser accepts command catalog metadata", () => {
         {
           name: "permissions",
           description: "View or change runtime permissions",
-          argument_hint: "[mode <value>]",
-          argument_choices: ["mode read-only", "mode workspace-write"],
+          argument_hint: "[default|review-changes|full-access]",
+          argument_choices: ["default", "review-changes", "full-access"],
           availability: "idle",
         },
       ],
@@ -31,8 +31,9 @@ test("server JSONL parser accepts command catalog metadata", () => {
   if (event.type !== "command_catalog") return;
   assert.equal(event.commands[0]?.name, "permissions");
   assert.deepEqual(event.commands[0]?.argument_choices, [
-    "mode read-only",
-    "mode workspace-write",
+    "default",
+    "review-changes",
+    "full-access",
   ]);
 });
 
@@ -89,21 +90,21 @@ test("server JSONL parser accepts bounded mutation diff fields", () => {
   assert.equal(event.diff_truncated, true);
 });
 
-test("server JSONL parser accepts session approval capability and tool call identity", () => {
+test("server JSONL parser accepts session approval scope and tool call identity", () => {
   const event = parseServerMessage(
     JSON.stringify({
       type: "approval_required",
       id: "approval_1",
       tool_call_id: "call_1",
       tool: "run_command",
-      can_approve_session: true,
+      session_scope: "pytest tests/test_x.py",
     }),
   );
 
   assert.equal(event.type, "approval_required");
   if (event.type !== "approval_required") return;
   assert.equal(event.tool_call_id, "call_1");
-  assert.equal(event.can_approve_session, true);
+  assert.equal(event.session_scope, "pytest tests/test_x.py");
 });
 
 test("server JSONL parser accepts bounded user input choices", () => {

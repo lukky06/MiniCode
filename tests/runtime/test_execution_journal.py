@@ -9,7 +9,7 @@ from minicode_harness.loop import AgentLoop
 from minicode_harness.resume import resume_run
 from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
-from minicode_harness.policy import check_command_allowed
+from minicode_harness.policy import ExecutionMode, check_command_allowed
 from minicode_harness.state import (
     ApprovalDecision,
     CheckpointStore,
@@ -189,6 +189,7 @@ def test_rejected_write_does_not_enter_execution_journal(tmp_path) -> None:
         enable_write=True,
         no_skills=True,
         approval_client=StaticApprovalClient(ApprovalDecision.REJECT),
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
     )
 
     loop.run()

@@ -372,6 +372,7 @@ def test_resume_restores_pending_approval_and_continues(tmp_path) -> None:
         workspace=workspace,
         run_id="run_20260701_001",
         no_write=False,
+        execution_mode="review-changes",
         repository_memory_enabled=False,
     )
     run_path = run_store.path_for(session.run_id)
@@ -499,7 +500,7 @@ def test_resume_can_persist_session_command_grant_for_restored_approval(tmp_path
                 "timeout_seconds": 30,
             },
             preview={"summary": "Run approved command"},
-            can_approve_session=True,
+            session_scope="python script.py",
         )
     )
 
@@ -527,6 +528,7 @@ def test_resume_rejects_pending_approval_and_returns_to_model(tmp_path) -> None:
         workspace=workspace,
         run_id="run_20260701_001",
         no_write=False,
+        execution_mode="review-changes",
         repository_memory_enabled=False,
     )
     run_path = run_store.path_for(session.run_id)

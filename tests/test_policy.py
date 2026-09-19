@@ -15,6 +15,7 @@ from minicode_harness.policy import (
     RiskLevel,
     check_command_allowed,
     classify_argv,
+    describe_command_session_grant,
     resolve_command_session_grant,
 )
 from minicode_harness.tools import (
@@ -135,6 +136,14 @@ def test_sandboxed_commands_do_not_create_session_grants(tmp_path) -> None:
         sandboxed=True,
         rules=[ask_rule],
     ) is None
+
+
+def test_session_grant_description_matches_grant_scope() -> None:
+    assert describe_command_session_grant(["git", "status", "--short"]) == "git status"
+    assert (
+        describe_command_session_grant(["python", "-m", "pytest", "-q"])
+        == "python -m pytest -q"
+    )
 
 
 def test_session_grant_scopes_interpreter_payload_to_exact_argv(tmp_path) -> None:

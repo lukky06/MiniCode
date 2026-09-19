@@ -14,13 +14,12 @@ test("approval overlay stays within narrow widths and toggles Python-provided de
       tool_call_id: "call_1",
       tool: "run_command",
       summary: "运行一个非常长的聚焦测试命令 😀",
-      can_approve_session: true,
+      session_scope: "pytest tests/terminal/test_layout.py",
       details: JSON.stringify({
-        risk_level: "high",
         preview: {
           command:
             "pytest tests/terminal/test_layout.py --maxfail=1 --disable-warnings",
-          reason: "Command needs explicit approval.",
+          reason: "Unsandboxed host command execution requires approval unless an allow rule matches.",
           effects: ["may create workspace-local test artifacts"],
         },
       }),
@@ -29,18 +28,20 @@ test("approval overlay stays within narrow widths and toggles Python-provided de
   );
 
   const compact = stripTerminalSequences(overlay.render(100).join("\n"));
-  assert.match(compact, /MiniCode wants to run a command/);
+  assert.match(compact, /Run this command\?/);
   assert.match(compact, /pytest tests\/terminal\/test_layout\.py/);
-  assert.match(compact, /Risk\s+HIGH/);
-  assert.match(compact, /Reason\s+Command needs explicit approval/);
+  assert.match(compact, /Reason\s+Unsandboxed host command execution requires approval/);
+  assert.match(compact, /Session scope\s+pytest tests\/terminal\/test_layout\.py/);
   assert.match(compact, /Allow once/);
-  assert.match(compact, /Allow for this session/);
+  assert.match(compact, /Allow similar this session/);
   assert.match(compact, /Reject/);
-  assert.doesNotMatch(compact, /risk_level/);
+  assert.doesNotMatch(compact, /Risk/);
+  assert.doesNotMatch(compact, /Skip/);
+  assert.doesNotMatch(compact, /Abort/);
 
   overlay.handleInput("v");
   const detailed = stripTerminalSequences(overlay.render(100).join("\n"));
-  assert.match(detailed, /risk_level/);
+  assert.match(detailed, /policy_category|preview|reason/);
   for (const width of [4, 8, 20, 40]) {
     for (const line of overlay.render(width)) {
       assert.ok(visibleWidth(line) <= width);
@@ -48,6 +49,6 @@ test("approval overlay stays within narrow widths and toggles Python-provided de
   }
 
   overlay.handleInput("g");
-  overlay.handleInput("s");
-  assert.deepEqual(decisions, ["approve_session", "skip"]);
+  overlay.handleInput("n");
+  assert.deepEqual(decisions, ["approve_session", "reject"]);
 });

@@ -272,15 +272,12 @@ def test_backend_session_start_emits_command_catalog(tmp_path: Path) -> None:
     ]
     permissions = catalog.commands[0]
     assert permissions.argument_choices == [
-        "mode read-only",
-        "mode workspace-write",
-        "mode full-access",
-        "approval on-request",
-        "approval never",
+        "default",
+        "review-changes",
+        "full-access",
     ]
     settings_event = events[2]
-    assert settings_event.permission_mode == "read-only"
-    assert settings_event.approval_policy == "on-request"
+    assert settings_event.execution_mode == "default"
     assert settings_event.collaboration_mode == "default"
 
 
@@ -295,28 +292,20 @@ def test_built_backend_permission_command_changes_next_run_defaults(tmp_path: Pa
             str(workspace),
             "--provider",
             "test",
-            "--permission-mode",
-            "read-only",
-            "--approval-policy",
-            "on-request",
+            "--execution-mode",
+            "default",
         ]
     )
     backend = _build_backend(args, output_sink=sink)
 
     initial = backend.request_factory("before")
-    backend.handle_message(CommandMessage(text="/permissions mode workspace-write"))
+    backend.handle_message(CommandMessage(text="/permissions review-changes"))
     _wait_for_event_type(stream, "panel")
-    backend.handle_message(CommandMessage(text="/permissions approval never"))
-    deadline = time.monotonic() + 1.0
-    while stream.getvalue().count('"type":"panel"') < 2 and time.monotonic() < deadline:
-        time.sleep(0.005)
     updated = backend.request_factory("after")
     backend.close(timeout=1.0)
 
-    assert initial.permission_mode.value == "read-only"
-    assert initial.approval_policy.value == "on-request"
-    assert updated.permission_mode.value == "workspace-write"
-    assert updated.approval_policy.value == "never"
+    assert initial.execution_mode.value == "default"
+    assert updated.execution_mode.value == "review-changes"
 
 
 def test_built_backend_sandbox_command_changes_next_run_defaults(tmp_path: Path) -> None:
@@ -386,10 +375,8 @@ def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path:
             str(workspace),
             "--provider",
             "test",
-            "--permission-mode",
-            "read-only",
-            "--approval-policy",
-            "on-request",
+            "--execution-mode",
+            "default",
         ]
     )
     backend = _build_backend(args, output_sink=sink)
@@ -399,31 +386,13 @@ def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path:
     events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
     mode_prompt = next(event for event in events if event.type == "user_input_required")
     assert [option.label for option in mode_prompt.options] == [
-        "Read only",
-        "Workspace write",
+        "Default",
+        "Review changes",
         "Full access",
     ]
 
     backend.handle_message(
         UserInputResponseMessage(id=mode_prompt.id, selected_index=1)
-    )
-    deadline = time.monotonic() + 1.0
-    approval_prompt = None
-    while time.monotonic() < deadline:
-        events = [parse_server_message(line) for line in stream.getvalue().splitlines()]
-        prompts = [event for event in events if event.type == "user_input_required"]
-        if len(prompts) >= 2:
-            approval_prompt = prompts[-1]
-            break
-        time.sleep(0.005)
-    assert approval_prompt is not None
-    assert [option.label for option in approval_prompt.options] == [
-        "On request",
-        "Never",
-    ]
-
-    backend.handle_message(
-        UserInputResponseMessage(id=approval_prompt.id, selected_index=0)
     )
     _wait_for_event_type(stream, "panel")
     deadline = time.monotonic() + 1.0
@@ -432,8 +401,7 @@ def test_permissions_command_without_arguments_uses_interactive_picker(tmp_path:
     updated = backend.request_factory("after picker")
     backend.close(timeout=1.0)
 
-    assert updated.permission_mode.value == "workspace-write"
-    assert updated.approval_policy.value == "on-request"
+    assert updated.execution_mode.value == "review-changes"
 
 
 def test_cancelling_idle_command_picker_does_not_emit_error(tmp_path: Path) -> None:
@@ -911,13 +879,13 @@ def test_backend_routes_approval_response_to_pending_python_client() -> None:
     backend.handle_message(
         ApprovalResponseMessage(
             id="approval_1",
-            decision="skip",
+            decision="reject",
         )
     )
 
     assert completed.wait(1.0)
     backend.close(timeout=1.0)
-    assert captured["response"].decision == ApprovalDecision.SKIP
+    assert captured["response"].decision == ApprovalDecision.REJECT
 
 
 def test_backend_routes_user_input_response_to_pending_python_client() -> None:

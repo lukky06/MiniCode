@@ -5,16 +5,15 @@ import json
 import pytest
 
 from minicode_harness.loop import AgentLoop
-from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
 from minicode_harness.policy import (
-    ApprovalPolicy,
+    ExecutionMode,
     PermissionDecision,
-    PermissionMode,
     check_command_allowed,
     decide_permission,
 )
 from minicode_harness.state import ApprovalDecision, StaticApprovalClient
+from minicode_harness.storage import HarnessDataStore as ProjectMemoryStore
 from minicode_harness.tools import CommandRunResult
 from minicode_harness.trace import TraceWriter
 
@@ -62,115 +61,31 @@ class RecordingCommandExecutor:
 
 
 @pytest.mark.parametrize(
-    (
-        "tool_name",
-        "requires_approval",
-        "is_command",
-        "approval_policy",
-        "permission_mode",
-        "expected",
-    ),
+    ("tool_name", "requires_approval", "execution_mode", "expected"),
     [
-        (
-            "read",
-            False,
-            False,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.READ_ONLY,
-            PermissionDecision.ALLOW,
-        ),
-        (
-            "write",
-            True,
-            False,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.READ_ONLY,
-            PermissionDecision.ASK,
-        ),
-        (
-            "write",
-            True,
-            False,
-            ApprovalPolicy.NEVER,
-            PermissionMode.READ_ONLY,
-            PermissionDecision.DENY,
-        ),
-        (
-            "write",
-            True,
-            False,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.WORKSPACE_WRITE,
-            PermissionDecision.ALLOW,
-        ),
-        (
-            "write",
-            True,
-            False,
-            ApprovalPolicy.NEVER,
-            PermissionMode.WORKSPACE_WRITE,
-            PermissionDecision.ALLOW,
-        ),
-        (
-            "run_command",
-            True,
-            True,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.WORKSPACE_WRITE,
-            PermissionDecision.ASK,
-        ),
-        (
-            "run_command",
-            True,
-            True,
-            ApprovalPolicy.NEVER,
-            PermissionMode.WORKSPACE_WRITE,
-            PermissionDecision.DENY,
-        ),
-        (
-            "run_command",
-            True,
-            True,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.FULL_ACCESS,
-            PermissionDecision.ASK,
-        ),
-        (
-            "run_command",
-            True,
-            True,
-            ApprovalPolicy.NEVER,
-            PermissionMode.FULL_ACCESS,
-            PermissionDecision.DENY,
-        ),
-        (
-            "write",
-            True,
-            False,
-            ApprovalPolicy.ON_REQUEST,
-            PermissionMode.FULL_ACCESS,
-            PermissionDecision.ALLOW,
-        ),
+        ("read", False, ExecutionMode.DEFAULT, PermissionDecision.ALLOW),
+        ("write", True, ExecutionMode.DEFAULT, PermissionDecision.ALLOW),
+        ("run_command", True, ExecutionMode.DEFAULT, PermissionDecision.ASK),
+        ("write", True, ExecutionMode.REVIEW_CHANGES, PermissionDecision.ASK),
+        ("run_command", True, ExecutionMode.REVIEW_CHANGES, PermissionDecision.ASK),
+        ("write", True, ExecutionMode.FULL_ACCESS, PermissionDecision.ALLOW),
+        ("run_command", True, ExecutionMode.FULL_ACCESS, PermissionDecision.ALLOW),
     ],
 )
 def test_permission_decision_matrix(
     tool_name,
     requires_approval,
-    is_command,
-    approval_policy,
-    permission_mode,
+    execution_mode,
     expected,
 ) -> None:
     assert decide_permission(
         tool_name=tool_name,
         requires_approval=requires_approval,
-        is_command=is_command,
-        approval_policy=approval_policy,
-        permission_mode=permission_mode,
+        execution_mode=execution_mode,
     ) == expected
 
 
-def test_workspace_write_allows_workspace_mutation_without_prompt(tmp_path) -> None:
+def test_default_mode_allows_workspace_mutation_without_prompt(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval = StaticApprovalClient(ApprovalDecision.REJECT)
@@ -193,11 +108,10 @@ def test_workspace_write_allows_workspace_mutation_without_prompt(tmp_path) -> N
         task="Create README",
         workspace=workspace,
         model_client=client,
-        trace_writer=TraceWriter(tmp_path / "workspace-write" / "trace.jsonl"),
+        trace_writer=TraceWriter(tmp_path / "default-write" / "trace.jsonl"),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
-        approval_policy=ApprovalPolicy.ON_REQUEST,
-        permission_mode=PermissionMode.WORKSPACE_WRITE,
+        execution_mode=ExecutionMode.DEFAULT,
         approval_client=approval,
         no_skills=True,
     ).run()
@@ -207,10 +121,10 @@ def test_workspace_write_allows_workspace_mutation_without_prompt(tmp_path) -> N
     assert approval.requests == []
 
 
-def test_read_only_never_denies_mutation_without_prompt(tmp_path) -> None:
+def test_review_changes_requires_workspace_mutation_approval(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    approval = StaticApprovalClient(ApprovalDecision.APPROVE)
+    approval = StaticApprovalClient(ApprovalDecision.REJECT)
     client = ScriptedModelClient(
         [
             ModelResponse(
@@ -230,21 +144,20 @@ def test_read_only_never_denies_mutation_without_prompt(tmp_path) -> None:
         task="Create README",
         workspace=workspace,
         model_client=client,
-        trace_writer=TraceWriter(tmp_path / "read-only-never" / "trace.jsonl"),
+        trace_writer=TraceWriter(tmp_path / "review-write" / "trace.jsonl"),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
-        approval_policy=ApprovalPolicy.NEVER,
-        permission_mode=PermissionMode.READ_ONLY,
+        execution_mode=ExecutionMode.REVIEW_CHANGES,
         approval_client=approval,
         no_skills=True,
     ).run()
 
     assert result.status == "completed"
     assert not (workspace / "README.md").exists()
-    assert approval.requests == []
+    assert len(approval.requests) == 1
 
 
-def test_full_access_never_does_not_bypass_command_approval_requirement(tmp_path) -> None:
+def test_full_access_runs_admitted_host_command_without_prompt(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval = StaticApprovalClient(ApprovalDecision.REJECT)
@@ -256,13 +169,7 @@ def test_full_access_never_does_not_bypass_command_approval_requirement(tmp_path
                     NormalizedToolCall(
                         id="call_cmd",
                         name="run_command",
-                        arguments={
-                            "argv": [
-                                "python",
-                                "-c",
-                                "open('diagnostic.txt', 'w').write('x')",
-                            ]
-                        },
+                        arguments={"argv": ["python", "-c", "print('ok')"]},
                     )
                 ]
             ),
@@ -274,11 +181,10 @@ def test_full_access_never_does_not_bypass_command_approval_requirement(tmp_path
         task="Run diagnostic",
         workspace=workspace,
         model_client=client,
-        trace_writer=TraceWriter(tmp_path / "full-access-never" / "trace.jsonl"),
+        trace_writer=TraceWriter(tmp_path / "full-access" / "trace.jsonl"),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
-        approval_policy=ApprovalPolicy.NEVER,
-        permission_mode=PermissionMode.FULL_ACCESS,
+        execution_mode=ExecutionMode.FULL_ACCESS,
         approval_client=approval,
         command_executor=executor,
         no_skills=True,
@@ -286,10 +192,10 @@ def test_full_access_never_does_not_bypass_command_approval_requirement(tmp_path
 
     assert result.status == "completed"
     assert approval.requests == []
-    assert executor.calls == []
+    assert executor.calls == [(["python", "-c", "print('ok')"], True)]
 
 
-def test_full_access_never_cannot_bypass_deterministic_command_deny(tmp_path) -> None:
+def test_full_access_cannot_bypass_deterministic_command_deny(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approval = StaticApprovalClient(ApprovalDecision.APPROVE)
@@ -317,8 +223,7 @@ def test_full_access_never_cannot_bypass_deterministic_command_deny(tmp_path) ->
         trace_writer=TraceWriter(trace_path),
         memory_store=ProjectMemoryStore(tmp_path / "memory"),
         enable_write=True,
-        approval_policy=ApprovalPolicy.NEVER,
-        permission_mode=PermissionMode.FULL_ACCESS,
+        execution_mode=ExecutionMode.FULL_ACCESS,
         approval_client=approval,
         command_executor=executor,
         no_skills=True,

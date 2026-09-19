@@ -25,7 +25,7 @@ from minicode_harness.output import (
     OutputSink,
     emit_semantic_compaction_event,
 )
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ExecutionMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.progress_policy import (
     BoundedProgressPolicy,
@@ -108,8 +108,7 @@ def build_agent_components(
     context_preparer: ContextPreparer | None,
     enable_write: bool,
     enable_command: bool,
-    approval_policy: ApprovalPolicy,
-    permission_mode: PermissionMode,
+    execution_mode: ExecutionMode,
     approval_client: ApprovalClient | None,
     approval_store: ApprovalStore | None,
     request_user_input_handler: Callable[[str, list[dict[str, str | None]]], Any] | None,
@@ -289,8 +288,7 @@ def build_agent_components(
         hook_owner=hook_owner,
         approval_client=resolved_approval_client,
         approval_store=resolved_approval_store,
-        approval_policy=approval_policy,
-        permission_mode=permission_mode,
+        execution_mode=execution_mode,
         execution_journal=execution_journal,
         session_memory=session_memory,
         artifact_dir=artifact_dir,

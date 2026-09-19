@@ -133,6 +133,16 @@ def render_argv(argv: Sequence[str]) -> str:
     return shlex.join([str(argument) for argument in argv])
 
 
+def describe_command_session_grant(argv: Sequence[str]) -> str:
+    """Describe the command scope covered by one Session grant."""
+
+    normalized, error = _normalize_argv(argv)
+    if error:
+        raise ValueError(error)
+    _, scope = _session_scope(normalized)
+    return render_argv([normalized[0], *scope])
+
+
 def resolve_command_executable_identity(
     workspace: Path | str,
     executable: str,

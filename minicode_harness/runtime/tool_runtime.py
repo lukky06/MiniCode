@@ -23,10 +23,10 @@ from minicode_harness.hooks import HookDecision, HookEvent, HookManager
 from minicode_harness.models import NormalizedToolCall
 from minicode_harness.output import OutputSink
 from minicode_harness.policy import (
-    ApprovalPolicy,
+    ExecutionMode,
     PermissionDecision,
-    PermissionMode,
     decide_permission,
+    describe_command_session_grant,
     render_argv,
     resolve_command_executable_identity,
     resolve_command_session_grant,
@@ -113,8 +113,7 @@ class ToolRuntime:
         hook_owner: Any,
         approval_client: ApprovalClient,
         approval_store: ApprovalStore,
-        approval_policy: ApprovalPolicy,
-        permission_mode: PermissionMode,
+        execution_mode: ExecutionMode,
         execution_journal: ExecutionJournal,
         session_memory: ReplSessionMemory | None,
         artifact_dir: Path,
@@ -135,8 +134,7 @@ class ToolRuntime:
         self.hook_owner = hook_owner
         self.approval_client = approval_client
         self.approval_store = approval_store
-        self.approval_policy = approval_policy
-        self.permission_mode = permission_mode
+        self.execution_mode = execution_mode
         self.execution_journal = execution_journal
         self.session_memory = session_memory
         self.artifact_dir = artifact_dir
@@ -1014,23 +1012,18 @@ class ToolRuntime:
         permission_decision = decide_permission(
             tool_name=tool_call.name,
             requires_approval=admission.requires_approval,
-            is_command=admission.command_policy is not None,
-            approval_policy=self.approval_policy,
-            permission_mode=self.permission_mode,
+            execution_mode=self.execution_mode,
         )
         self.trace_writer.write_event(
             "permission_decision",
             step=step,
             tool_call_id=tool_call.id,
             tool=tool_call.name,
-            approval_policy=self.approval_policy.value,
-            permission_mode=self.permission_mode.value,
+            execution_mode=self.execution_mode.value,
             decision=permission_decision.value,
         )
         if permission_decision == PermissionDecision.ALLOW:
             return None
-        if permission_decision == PermissionDecision.DENY:
-            return ApprovalDecision.REJECT
         fingerprint = tool_call_fingerprint(tool_call)
         if fingerprint in self._denied_tool_calls:
             self.trace_writer.write_event(
@@ -1059,7 +1052,11 @@ class ToolRuntime:
             step=step,
             arguments=tool_call.arguments,
             preview=preview,
-            can_approve_session=session_grant is not None,
+            session_scope=(
+                describe_command_session_grant(tool_call.arguments["argv"])
+                if session_grant is not None
+                else None
+            ),
         )
         self.approval_store.save_pending(request)
         self.trace_writer.write_event(

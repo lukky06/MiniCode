@@ -65,10 +65,9 @@ class TerminalApprovalClient:
             self._render_request(request, full=False)
             while True:
                 try:
-                    grant_hint = "  [g] session" if request.can_approve_session else ""
+                    grant_hint = f"  [g] session: {request.session_scope}" if request.session_scope else ""
                     answer = self.answer_reader(
-                        "Approve? [y] once" + grant_hint + "  [n] reject  [s] skip  "
-                        "[a] abort  [v] details: "
+                        "Approve? [y] once" + grant_hint + "  [n] reject  [v] details: "
                     )
                 except EOFError:
                     return ApprovalResponse(
@@ -83,19 +82,15 @@ class TerminalApprovalClient:
                 normalized = answer.strip().lower()
                 if normalized in {"y", "yes", "approve"}:
                     return ApprovalResponse(decision=ApprovalDecision.APPROVE)
-                if normalized in {"g", "grant", "session"} and request.can_approve_session:
+                if normalized in {"g", "grant", "session"} and request.session_scope:
                     return ApprovalResponse(decision=ApprovalDecision.APPROVE_SESSION)
                 if normalized in {"n", "no", "reject"}:
                     return ApprovalResponse(decision=ApprovalDecision.REJECT)
-                if normalized in {"s", "skip"}:
-                    return ApprovalResponse(decision=ApprovalDecision.SKIP)
-                if normalized in {"a", "abort"}:
-                    return ApprovalResponse(decision=ApprovalDecision.ABORT)
                 if normalized in {"v", "view", "details"}:
                     self._render_request(request, full=True)
                     continue
                 self.console.print(
-                    "Choose y, g, n, s, a, or v." if request.can_approve_session else "Choose y, n, s, a, or v.",
+                    "Choose y, g, n, or v." if request.session_scope else "Choose y, n, or v.",
                     style="yellow",
                     markup=False,
                     highlight=False,

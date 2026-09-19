@@ -21,7 +21,7 @@ from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
 from minicode_harness.models import ModelClient, NormalizedToolCall, create_model_client
 from minicode_harness.output import OutputSink
-from minicode_harness.policy import CommandRule, PermissionMode
+from minicode_harness.policy import CommandRule
 from minicode_harness.runtime.collaboration import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.run_executor import build_agent_loop_from_session
@@ -442,7 +442,7 @@ def resume_run(
         session.sandbox_mode,
         image=session.sandbox_image,
         command_rules=command_rules,
-        workspace_writable=PermissionMode(session.permission_mode) != PermissionMode.READ_ONLY,
+        workspace_writable=not session.no_write,
     )
     loop = build_agent_loop_from_session(
         session,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from minicode_harness.output import OutputSink
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ExecutionMode
 from minicode_harness.runtime import CollaborationMode, DEFAULT_COLLABORATION_MODE
 from minicode_harness.runtime.cancellation import CancellationToken
 from minicode_harness.runtime.steering import SteeringQueue
@@ -79,8 +79,7 @@ class TerminalSessionSettings:
     """Mutable terminal-only defaults applied when the next Run starts."""
 
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
-    permission_mode: PermissionMode = PermissionMode.READ_ONLY
-    approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
+    execution_mode: ExecutionMode = ExecutionMode.DEFAULT
     sandbox_mode: SandboxMode = SandboxMode.LOCAL
     sandbox_image: str | None = None
 
@@ -100,8 +99,7 @@ class TerminalContext:
     approval_client: ApprovalClient
     run_store: RunStore
     user_input_client: UserInputClient | None = None
-    approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
-    permission_mode: PermissionMode = PermissionMode.READ_ONLY
+    execution_mode: ExecutionMode = ExecutionMode.DEFAULT
     sandbox_mode: SandboxMode = SandboxMode.LOCAL
     sandbox_image: str | None = None
     session_settings: TerminalSessionSettings = field(

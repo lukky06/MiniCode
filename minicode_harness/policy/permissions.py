@@ -1,35 +1,26 @@
-"""Unified approval-policy and permission-mode decisions."""
+"""Execution-mode decisions for side-effecting tools."""
 
 from __future__ import annotations
 
 from enum import StrEnum
 
 
-class ApprovalPolicy(StrEnum):
-    """When MiniCode may ask the user to approve a side effect."""
+class ExecutionMode(StrEnum):
+    """User-facing execution behavior for admitted side effects."""
 
-    ON_REQUEST = "on-request"
-    NEVER = "never"
-
-
-class PermissionMode(StrEnum):
-    """Which admitted side effects may execute without per-call approval."""
-
-    READ_ONLY = "read-only"
-    WORKSPACE_WRITE = "workspace-write"
+    DEFAULT = "default"
+    REVIEW_CHANGES = "review-changes"
     FULL_ACCESS = "full-access"
 
 
 class PermissionDecision(StrEnum):
-    """Effective decision after deterministic admission and session grants."""
+    """Effective interactive decision after deterministic admission."""
 
     ALLOW = "allow"
     ASK = "ask"
-    DENY = "deny"
 
 
-DEFAULT_APPROVAL_POLICY = ApprovalPolicy.ON_REQUEST
-DEFAULT_PERMISSION_MODE = PermissionMode.READ_ONLY
+DEFAULT_EXECUTION_MODE = ExecutionMode.DEFAULT
 
 _WORKSPACE_MUTATION_TOOLS = {"edit", "write", "apply_patch"}
 
@@ -38,37 +29,17 @@ def decide_permission(
     *,
     tool_name: str,
     requires_approval: bool,
-    is_command: bool,
-    approval_policy: ApprovalPolicy,
-    permission_mode: PermissionMode,
+    execution_mode: ExecutionMode,
 ) -> PermissionDecision:
-    """Resolve only the interactive-approval layer.
-
-    Deterministic tool/command admission runs before this function and cannot be
-    bypassed by any permission mode.
-    """
+    """Resolve whether an already-admitted tool needs interactive approval."""
 
     if not requires_approval:
         return PermissionDecision.ALLOW
-
+    if execution_mode == ExecutionMode.FULL_ACCESS:
+        return PermissionDecision.ALLOW
     if (
-        permission_mode == PermissionMode.WORKSPACE_WRITE
+        execution_mode == ExecutionMode.DEFAULT
         and tool_name in _WORKSPACE_MUTATION_TOOLS
     ):
         return PermissionDecision.ALLOW
-
-    if is_command:
-        return (
-            PermissionDecision.ASK
-            if approval_policy == ApprovalPolicy.ON_REQUEST
-            else PermissionDecision.DENY
-        )
-
-    if permission_mode == PermissionMode.FULL_ACCESS:
-        return PermissionDecision.ALLOW
-
-    return (
-        PermissionDecision.ASK
-        if approval_policy == ApprovalPolicy.ON_REQUEST
-        else PermissionDecision.DENY
-    )
+    return PermissionDecision.ASK

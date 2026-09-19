@@ -32,8 +32,7 @@ class CommandCatalogEvent(_ProtocolMessage):
 
 class SessionSettingsEvent(_ProtocolMessage):
     type: Literal["session_settings"] = "session_settings"
-    permission_mode: str
-    approval_policy: str
+    execution_mode: str
     collaboration_mode: str
 
 
@@ -97,7 +96,7 @@ class ApprovalRequired(_ProtocolMessage):
     tool: str
     summary: str | None = None
     details: str | None = None
-    can_approve_session: bool = False
+    session_scope: str | None = None
 
 
 class UserInputOptionPayload(_ProtocolMessage):
@@ -151,7 +150,7 @@ class CommandMessage(_ProtocolMessage):
     text: str = Field(min_length=1, max_length=256)
 
 
-ApprovalDecision = Literal["approve", "approve_session", "reject", "skip", "abort"]
+ApprovalDecision = Literal["approve", "approve_session", "reject"]
 
 
 class ApprovalResponseMessage(_ProtocolMessage):

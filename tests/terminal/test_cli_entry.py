@@ -45,8 +45,7 @@ def test_no_argument_main_starts_terminal_when_stdin_and_stdout_are_tty(
     assert calls["kwargs"]["provider"] == "qwen"
     assert calls["kwargs"]["session_mode"] == "new"
     assert calls["kwargs"]["session_id"] is None
-    assert calls["kwargs"]["permission_mode"] == "read-only"
-    assert calls["kwargs"]["approval_policy"] == "on-request"
+    assert calls["kwargs"]["execution_mode"] == "default"
     assert calls["kwargs"]["collaboration_mode"] == "default"
     assert calls["kwargs"]["initial_task"] is None
 
@@ -118,10 +117,8 @@ def test_bare_task_main_starts_interactive_session_with_options(
             "--workspace",
             str(workspace),
             "--no-write",
-            "--permission-mode",
-            "workspace-write",
-            "--approval-policy",
-            "never",
+            "--execution-mode",
+            "review-changes",
             "--mode",
             "plan",
             "--no-subagents",
@@ -138,8 +135,7 @@ def test_bare_task_main_starts_interactive_session_with_options(
     assert calls["kwargs"]["workspace"] == workspace
     assert calls["kwargs"]["provider"] == "deepseek"
     assert calls["kwargs"]["write_enabled"] is False
-    assert calls["kwargs"]["permission_mode"] == "workspace-write"
-    assert calls["kwargs"]["approval_policy"] == "never"
+    assert calls["kwargs"]["execution_mode"] == "review-changes"
     assert calls["kwargs"]["collaboration_mode"] == "plan"
     assert calls["kwargs"]["subagents_enabled"] is False
     assert calls["kwargs"]["session_mode"] == "new"

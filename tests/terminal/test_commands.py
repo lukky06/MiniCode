@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from minicode_harness.output import NullOutputSink
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ExecutionMode
 from minicode_harness.state import ReplSessionStore
 from minicode_harness.state import (
     CheckpointStore,
@@ -68,8 +68,7 @@ def test_router_handles_status_model_permissions_and_plan(tmp_path) -> None:
     assert f"Workspace: {context.workspace}" in (status.content or "")
     assert "Provider: qwen" in (model.content or "")
     assert "Write tools enabled: True" in (permissions.content or "")
-    assert "Permission mode: read-only" in (permissions.content or "")
-    assert "Approval policy: on-request" in (permissions.content or "")
+    assert "Execution mode: default" in (permissions.content or "")
     assert "Command sandbox: local" in (permissions.content or "")
     assert "Command sandbox: local" in (sandbox_status.content or "")
     assert "Plan mode: off" in (plan_status.content or "")
@@ -92,13 +91,11 @@ def test_command_catalog_is_ordered_and_exposes_argument_choices() -> None:
     ]
     permissions = next(item for item in catalog if item.name == "permissions")
     sandbox = next(item for item in catalog if item.name == "sandbox")
-    assert permissions.argument_hint == "[mode <value> | approval <value>]"
+    assert permissions.argument_hint == "[default|review-changes|full-access]"
     assert permissions.argument_choices == (
-        "mode read-only",
-        "mode workspace-write",
-        "mode full-access",
-        "approval on-request",
-        "approval never",
+        "default",
+        "review-changes",
+        "full-access",
     )
     assert permissions.availability == "idle"
     assert sandbox.argument_hint == "[status|local|docker [image]]"
@@ -161,35 +158,22 @@ def test_permissions_command_updates_session_defaults_for_subsequent_runs(tmp_pa
     )
     router = SlashCommandRouter()
 
-    write_mode = router.execute(
-        parse_slash_command("/permissions mode workspace-write"),
-        context,
-    )
-    approval = router.execute(
-        parse_slash_command("/permissions approval never"),
+    changed = router.execute(
+        parse_slash_command("/permissions review-changes"),
         context,
     )
     status = router.execute(parse_slash_command("/permissions status"), context)
 
-    assert write_mode.status == "completed"
-    assert approval.status == "completed"
-    assert settings.permission_mode == PermissionMode.WORKSPACE_WRITE
-    assert settings.approval_policy == ApprovalPolicy.NEVER
-    assert "Permission mode: workspace-write" in (status.content or "")
-    assert "Approval policy: never" in (status.content or "")
+    assert changed.status == "completed"
+    assert settings.execution_mode == ExecutionMode.REVIEW_CHANGES
+    assert "Execution mode: review-changes" in (status.content or "")
 
 
-def test_permissions_picker_applies_both_choices_atomically(tmp_path) -> None:
-    class InterruptedInput:
-        def __init__(self) -> None:
-            self.calls = 0
-
+def test_permissions_picker_applies_single_execution_mode(tmp_path) -> None:
+    class Picker:
         def choose(self, request):
-            del request
-            self.calls += 1
-            if self.calls == 1:
-                return SimpleNamespace(selected_index=1)
-            raise RuntimeError("selection cancelled")
+            assert request.question == "Choose how MiniCode may execute admitted actions."
+            return SimpleNamespace(selected_index=1)
 
     settings = TerminalSessionSettings()
     base = _context(tmp_path)
@@ -197,38 +181,27 @@ def test_permissions_picker_applies_both_choices_atomically(tmp_path) -> None:
         **{
             **base.__dict__,
             "session_settings": settings,
-            "user_input_client": InterruptedInput(),
+            "user_input_client": Picker(),
         }
     )
 
-    try:
-        SlashCommandRouter().execute(parse_slash_command("/permissions"), context)
-    except RuntimeError as exc:
-        assert "cancelled" in str(exc)
-    else:
-        raise AssertionError("interrupted picker must surface cancellation")
+    result = SlashCommandRouter().execute(parse_slash_command("/permissions"), context)
 
-    assert settings.permission_mode == PermissionMode.READ_ONLY
-    assert settings.approval_policy == ApprovalPolicy.ON_REQUEST
+    assert result.status == "completed"
+    assert settings.execution_mode == ExecutionMode.REVIEW_CHANGES
 
 
 def test_permissions_command_rejects_invalid_values(tmp_path) -> None:
     router = SlashCommandRouter()
     context = _context(tmp_path)
 
-    bad_mode = router.execute(
-        parse_slash_command("/permissions mode root"),
-        context,
-    )
-    bad_approval = router.execute(
-        parse_slash_command("/permissions approval always"),
+    invalid = router.execute(
+        parse_slash_command("/permissions root"),
         context,
     )
 
-    assert bad_mode.status == "failed"
-    assert "read-only, workspace-write, or full-access" in (bad_mode.content or "")
-    assert bad_approval.status == "failed"
-    assert "on-request or never" in (bad_approval.content or "")
+    assert invalid.status == "failed"
+    assert "default, review-changes, or full-access" in (invalid.content or "")
 
 
 def test_router_rejects_invalid_plan_arguments(tmp_path) -> None:

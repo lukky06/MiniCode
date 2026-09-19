@@ -47,8 +47,7 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
         provider="deepseek",
         model="deepseek-reasoner",
         write_enabled=False,
-        approval_policy="never",
-        permission_mode="workspace-write",
+        execution_mode="review-changes",
         collaboration_mode="plan",
         sandbox_mode="docker",
         sandbox_image="python:3.11-slim",
@@ -73,8 +72,7 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
     assert env["MINICODE_WORKSPACE"] == str(workspace)
     assert env["MINICODE_PROVIDER"] == "deepseek"
     assert env["MINICODE_MODEL"] == "deepseek-reasoner"
-    assert env["MINICODE_TUI_APPROVAL_POLICY"] == "never"
-    assert env["MINICODE_TUI_PERMISSION_MODE"] == "workspace-write"
+    assert env["MINICODE_TUI_EXECUTION_MODE"] == "review-changes"
     assert env["MINICODE_TUI_COLLABORATION_MODE"] == "plan"
     assert env["MINICODE_TUI_SANDBOX_MODE"] == "docker"
     assert env["MINICODE_TUI_SANDBOX_IMAGE"] == "python:3.11-slim"
@@ -112,8 +110,7 @@ def test_launch_tui_runs_packaged_entrypoint_in_workspace(tmp_path, monkeypatch)
         provider="qwen",
         model=None,
         write_enabled=True,
-        approval_policy="on-request",
-        permission_mode="read-only",
+        execution_mode="default",
         collaboration_mode="default",
         sandbox_mode="local",
         sandbox_image=None,

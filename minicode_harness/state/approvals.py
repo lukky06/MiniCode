@@ -20,7 +20,6 @@ class ApprovalDecision(StrEnum):
     APPROVE = "approve"
     APPROVE_SESSION = "approve_session"
     REJECT = "reject"
-    SKIP = "skip"
     ABORT = "abort"
 
 
@@ -34,7 +33,7 @@ class ApprovalRequest(BaseModel):
     step: int | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     preview: dict[str, Any] = Field(default_factory=dict)
-    can_approve_session: bool = False
+    session_scope: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -118,9 +117,9 @@ class InteractiveApprovalClient:
         _print_preview(request, full=False)
         while True:
             try:
-                grant_hint = ", [g] approve for session" if request.can_approve_session else ""
+                grant_hint = f", [g] allow {request.session_scope!r} for session" if request.session_scope else ""
                 answer = input(
-                    f"Approve tool call? [y] approve once{grant_hint}, [n] reject, [s] skip, [a] abort, [v] view: "
+                    f"Approve tool call? [y] approve once{grant_hint}, [n] reject, [v] view: "
                 )
             except EOFError:
                 return ApprovalResponse(
@@ -130,14 +129,10 @@ class InteractiveApprovalClient:
             normalized = answer.strip().lower()
             if normalized == "y":
                 return ApprovalResponse(decision=ApprovalDecision.APPROVE)
-            if normalized == "g" and request.can_approve_session:
+            if normalized == "g" and request.session_scope:
                 return ApprovalResponse(decision=ApprovalDecision.APPROVE_SESSION)
             if normalized == "n":
                 return ApprovalResponse(decision=ApprovalDecision.REJECT)
-            if normalized == "s":
-                return ApprovalResponse(decision=ApprovalDecision.SKIP)
-            if normalized == "a":
-                return ApprovalResponse(decision=ApprovalDecision.ABORT)
             if normalized == "v":
                 _print_preview(request, full=True)
 

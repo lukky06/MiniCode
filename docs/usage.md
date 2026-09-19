@@ -54,8 +54,7 @@ MiniCode 当前支持 Qwen、DeepSeek、Kimi、OpenAI、Anthropic 和 Ollama。
 ```toml
 provider = "deepseek"
 model = "deepseek-chat"
-permission_mode = "workspace-write"
-approval_policy = "on-request"
+execution_mode = "default"
 sandbox = "docker"
 sandbox_image = "your-dev-image:latest"
 
@@ -180,32 +179,28 @@ minicode report [run_id]
 /report
 ```
 
-## 8. Permission
+## 8. Execution Mode
 
-MiniCode 提供三种 Permission Mode：
+MiniCode 对用户暴露三种 Execution Mode（执行模式）：
 
 ```text
-read-only
-workspace-write
+default
+review-changes
 full-access
 ```
 
-`read-only` 适合仓库分析和代码解释；`workspace-write` 允许在当前 Workspace 内执行受控文件修改；`full-access` 放宽部分已经通过确定性安全策略的非命令副作用。
+`default` 是常规开发模式：工作区文件修改和 Docker 沙箱内普通开发命令直接执行，需要跨出默认执行边界的动作再请求确认。`review-changes` 会让已通过确定性策略的工作区修改也进入审批；`full-access` 会自动执行已经通过确定性策略的副作用。需要彻底关闭写能力时继续使用 `--no-write`，它是独立的硬能力开关。
 
-Approval Policy 控制需要人工确认的操作：
-
-```text
-on-request
-never
-```
-
-查看当前权限：
+查看或修改后续 Run 的执行模式：
 
 ```text
 /permissions
+/permissions default
+/permissions review-changes
+/permissions full-access
 ```
 
-Workspace 边界、敏感路径和 Hard Safety 策略始终生效。对 `run_command` 而言，Docker 中普通命令优先依赖沙箱隔离，本地宿主命令默认审批；显式 `ask` 可以要求 Docker 内仍审批，显式 `deny` 会在审批前直接拒绝。`read-only` 模式下 Docker 会把 `/workspace` 以只读方式挂载，写能力模式才使用读写挂载。Session 级命令授权只用于需要审批的非沙箱命令，不会放宽 Hard Safety 或 `command_rules`。
+WorkspaceGuard、敏感路径和 Hard Safety 始终先执行，Execution Mode 无法绕过确定性拒绝。对 `run_command` 而言，Docker 中未命中显式规则的普通命令直接运行，本地宿主命令在 `default` 与 `review-changes` 下进入审批；显式 `deny` 始终拒绝，显式 `ask` 在需要交互审批的执行模式下触发确认。`--no-write` 会让 Docker 以只读方式挂载 Workspace。Session 级命令授权会显示具体命令范围，只在当前 Session 内复用匹配授权。
 
 ## 9. Plan Mode
 

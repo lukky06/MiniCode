@@ -83,8 +83,7 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
             [
                 'provider = "deepseek"',
                 'model = "deepseek-chat"',
-                'permission_mode = "workspace-write"',
-                'approval_policy = "never"',
+                'execution_mode = "review-changes"',
                 'sandbox = "docker"',
                 'sandbox_image = "python:3.12"',
             ]
@@ -106,8 +105,7 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
 
     assert captured["provider"] == "deepseek"
     assert captured["model"] == "deepseek-chat"
-    assert captured["permission_mode"] == "workspace-write"
-    assert captured["approval_policy"] == "never"
+    assert captured["execution_mode"] == "review-changes"
     assert captured["sandbox_mode"] == "docker"
     assert captured["sandbox_image"] == "python:3.12"
 
@@ -159,8 +157,7 @@ def test_user_config_precedence_keeps_cli_and_environment_above_file(monkeypatch
     config = UserConfig(
         provider="deepseek",
         model="config-model",
-        permission_mode="workspace-write",
-        approval_policy="never",
+        execution_mode="review-changes",
         sandbox="docker",
         sandbox_image="config-image:latest",
     )
@@ -173,12 +170,8 @@ def test_user_config_precedence_keeps_cli_and_environment_above_file(monkeypatch
     assert cli_module._resolve_model(None, config=config) == "env-model"
     assert cli_module._resolve_model("cli-model", config=config) == "cli-model"
     assert (
-        cli_module._resolve_permission_mode("full-access", config=config).value
+        cli_module._resolve_execution_mode("full-access", config=config).value
         == "full-access"
-    )
-    assert (
-        cli_module._resolve_approval_policy("on-request", config=config).value
-        == "on-request"
     )
     assert cli_module._resolve_sandbox_mode("local", config=config).value == "local"
     assert (
@@ -240,8 +233,7 @@ def test_exec_uses_user_config_when_options_are_omitted(tmp_path, monkeypatch) -
         lambda: UserConfig(
             provider="deepseek",
             model="deepseek-chat",
-            permission_mode="workspace-write",
-            approval_policy="never",
+            execution_mode="review-changes",
             sandbox="local",
         ),
         raising=False,
@@ -257,8 +249,7 @@ def test_exec_uses_user_config_when_options_are_omitted(tmp_path, monkeypatch) -
     session_json = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     assert session_json["provider"] == "deepseek"
     assert session_json["model"] == "deepseek-chat"
-    assert session_json["permission_mode"] == "workspace-write"
-    assert session_json["approval_policy"] == "never"
+    assert session_json["execution_mode"] == "review-changes"
     assert session_json["sandbox_mode"] == "local"
 
 
@@ -469,10 +460,8 @@ def test_interactive_task_parser_accepts_options_before_and_after_task() -> None
             "--workspace",
             "workspace",
             "--no-write",
-            "--permission-mode",
-            "workspace-write",
-            "--approval-policy",
-            "never",
+            "--execution-mode",
+            "review-changes",
             "--mode",
             "plan",
             "--skills",
@@ -485,8 +474,7 @@ def test_interactive_task_parser_accepts_options_before_and_after_task() -> None
     assert launch.workspace == Path("workspace")
     assert launch.provider == "deepseek"
     assert launch.no_write is True
-    assert launch.permission_mode.value == "workspace-write"
-    assert launch.approval_policy.value == "never"
+    assert launch.execution_mode.value == "review-changes"
     assert launch.collaboration_mode.value == "plan"
     assert launch.skills == "repo-explain"
     assert launch.no_subagents is True
@@ -507,10 +495,8 @@ def test_session_launch_options_reject_invalid_forms() -> None:
         _parse_interactive_task_args(["--workspace", "--no-write"])
     with pytest.raises(ValueError, match="only with `minicode exec`"):
         _parse_interactive_task_args(["fix", "tests", "--dry-run"])
-    with pytest.raises(ValueError, match="Invalid permission mode"):
-        _parse_interactive_task_args(["--permission-mode", "unsafe"])
-    with pytest.raises(ValueError, match="Invalid approval policy"):
-        _parse_interactive_task_args(["--approval-policy", "always"])
+    with pytest.raises(ValueError, match="Invalid execution mode"):
+        _parse_interactive_task_args(["--execution-mode", "unsafe"])
     with pytest.raises(ValueError, match="Invalid collaboration mode"):
         _parse_interactive_task_args(["--mode", "execute"])
 
@@ -520,8 +506,7 @@ def test_interactive_parser_preserves_continue_launch_mode() -> None:
 
     assert continued.session_mode == SessionLaunchMode.CONTINUE
     assert continued.no_color is True
-    assert continued.permission_mode.value == "read-only"
-    assert continued.approval_policy.value == "on-request"
+    assert continued.execution_mode.value == "default"
     assert continued.collaboration_mode.value == "default"
 
 

@@ -7,7 +7,7 @@ import tomllib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from minicode_harness.policy import ApprovalPolicy, CommandRule, PermissionMode
+from minicode_harness.policy import CommandRule, ExecutionMode
 from minicode_harness.tools import SandboxMode
 
 
@@ -18,8 +18,7 @@ class UserConfig(BaseModel):
 
     provider: str | None = None
     model: str | None = None
-    permission_mode: PermissionMode | None = None
-    approval_policy: ApprovalPolicy | None = None
+    execution_mode: ExecutionMode | None = None
     sandbox: SandboxMode | None = None
     sandbox_image: str | None = None
     command_rules: list[CommandRule] = Field(default_factory=list)

@@ -55,10 +55,8 @@ from minicode_harness.state import (
 from minicode_harness.models import ModelClient, ModelResponse, NormalizedToolCall
 from minicode_harness.output import OutputSink
 from minicode_harness.policy import (
-    ApprovalPolicy,
-    DEFAULT_APPROVAL_POLICY,
-    DEFAULT_PERMISSION_MODE,
-    PermissionMode,
+    DEFAULT_EXECUTION_MODE,
+    ExecutionMode,
     render_argv,
 )
 from minicode_harness.runtime import (
@@ -157,8 +155,7 @@ class AgentLoop:
         repository_rule_loader: RepositoryRuleLoader | None = None,
         enable_write: bool = False,
         enable_command: bool = True,
-        approval_policy: ApprovalPolicy = DEFAULT_APPROVAL_POLICY,
-        permission_mode: PermissionMode = DEFAULT_PERMISSION_MODE,
+        execution_mode: ExecutionMode = DEFAULT_EXECUTION_MODE,
         collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE,
         approval_client: ApprovalClient | None = None,
         user_input_client: UserInputClient | None = None,
@@ -195,8 +192,7 @@ class AgentLoop:
         self._last_repository_rules_hash: str | None = None
         self.enable_write = enable_write
         self.enable_command = enable_command
-        self.approval_policy = ApprovalPolicy(approval_policy)
-        self.permission_mode = PermissionMode(permission_mode)
+        self.execution_mode = ExecutionMode(execution_mode)
         self.collaboration_mode = CollaborationMode(collaboration_mode)
         self.user_input_client = user_input_client
         self.provider = provider.strip().lower() or "unknown"
@@ -306,8 +302,7 @@ class AgentLoop:
             context_preparer=context_preparer,
             enable_write=self.enable_write,
             enable_command=self.enable_command,
-            approval_policy=self.approval_policy,
-            permission_mode=self.permission_mode,
+            execution_mode=self.execution_mode,
             approval_client=approval_client,
             approval_store=approval_store,
             request_user_input_handler=(

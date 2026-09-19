@@ -113,8 +113,6 @@ def test_server_messages_round_trip_as_one_jsonl_record(message) -> None:
         ApprovalResponseMessage(id="approval_1", decision="approve"),
         ApprovalResponseMessage(id="approval_1", decision="approve_session"),
         ApprovalResponseMessage(id="approval_1", decision="reject"),
-        ApprovalResponseMessage(id="approval_1", decision="skip"),
-        ApprovalResponseMessage(id="approval_1", decision="abort"),
         UserInputResponseMessage(id="input_1", selected_index=1),
         CancelMessage(),
     ],

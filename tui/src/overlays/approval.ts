@@ -1,5 +1,4 @@
 import {
-  Key,
   Text,
   matchesKey,
   truncateToWidth,
@@ -10,12 +9,7 @@ import type { ServerMessage } from "../protocol.js";
 import { ui } from "../theme.js";
 
 type ApprovalEvent = Extract<ServerMessage, { type: "approval_required" }>;
-export type ApprovalDecision =
-  | "approve"
-  | "approve_session"
-  | "reject"
-  | "skip"
-  | "abort";
+export type ApprovalDecision = "approve" | "approve_session" | "reject";
 
 export class ApprovalOverlay implements Component {
   private readonly body = new Text();
@@ -35,7 +29,7 @@ export class ApprovalOverlay implements Component {
       this.onDecision("approve");
       return;
     }
-    if (this.event.can_approve_session && matchesKey(data, "g")) {
+    if (this.event.session_scope && matchesKey(data, "g")) {
       this.onDecision("approve_session");
       return;
     }
@@ -43,30 +37,19 @@ export class ApprovalOverlay implements Component {
       this.onDecision("reject");
       return;
     }
-    if (matchesKey(data, "s")) {
-      this.onDecision("skip");
-      return;
-    }
-    if (matchesKey(data, "a")) {
-      this.onDecision("abort");
-      return;
-    }
     if (matchesKey(data, "v")) {
       this.showDetails = !this.showDetails;
-      return;
-    }
-    if (matchesKey(data, Key.escape)) {
-      this.onDecision("abort");
     }
   }
 
   render(width: number): string[] {
     const preview = approvalPreview(this.event.details);
     const lines = [
-      ui.warning("! ACTION REQUIRED"),
-      ui.bold(approvalAction(this.event.tool)),
+      ui.warning("! PERMISSION REQUIRED"),
+      ui.bold(approvalQuestion(this.event.tool)),
       "",
     ];
+
     if (preview.command) {
       lines.push(ui.code(`$ ${preview.command}`), "");
     } else if (preview.path) {
@@ -74,9 +57,7 @@ export class ApprovalOverlay implements Component {
     } else if (this.event.summary) {
       lines.push(this.event.summary, "");
     }
-    if (preview.riskLevel) {
-      lines.push(`${ui.muted("Risk")}    ${ui.warning(preview.riskLevel.toUpperCase())}`);
-    }
+
     if (preview.reason) {
       lines.push(`${ui.muted("Reason")}  ${preview.reason}`);
     }
@@ -84,19 +65,27 @@ export class ApprovalOverlay implements Component {
       lines.push(ui.muted("Effects"));
       lines.push(...preview.effects.slice(0, 3).map((effect) => `  - ${effect}`));
     }
-    if (preview.riskLevel || preview.reason || preview.effects.length > 0) {
+    if (this.event.session_scope) {
+      lines.push(
+        `${ui.muted("Session scope")}  ${ui.code(this.event.session_scope)}`,
+      );
+    }
+    if (preview.reason || preview.effects.length > 0 || this.event.session_scope) {
       lines.push("");
     }
+
     if (this.showDetails && this.event.details) {
       lines.push(this.event.details, "");
     }
-    const grant = this.event.can_approve_session
-      ? `  ${ui.success("[G] Allow for this session")}`
+
+    const grant = this.event.session_scope
+      ? `  ${ui.success("[G] Allow similar this session")}`
       : "";
     lines.push(
       `${ui.success("[Y] Allow once")}${grant}  ${ui.error("[N] Reject")}`,
-      ui.muted("[S] Skip · [A] Abort · [V] Details"),
+      ui.muted("[V] Details"),
     );
+
     this.body.setText(lines.join("\n"));
     return this.body
       .render(width)
@@ -105,7 +94,6 @@ export class ApprovalOverlay implements Component {
 }
 
 type ApprovalPreview = {
-  riskLevel?: string;
   command?: string;
   path?: string;
   reason?: string;
@@ -119,7 +107,6 @@ function approvalPreview(details?: string | null): ApprovalPreview {
     if (!isRecord(raw)) return { effects: [] };
     const preview = isRecord(raw.preview) ? raw.preview : {};
     return {
-      riskLevel: stringValue(raw.risk_level),
       command: stringValue(preview.command),
       path: stringValue(preview.path),
       reason: stringValue(preview.reason),
@@ -132,12 +119,14 @@ function approvalPreview(details?: string | null): ApprovalPreview {
   }
 }
 
-function approvalAction(tool: string): string {
-  if (tool === "run_command") return "MiniCode wants to run a command";
-  if (["edit", "write", "apply_patch"].includes(tool)) {
-    return "MiniCode wants to change workspace files";
+function approvalQuestion(tool: string): string {
+  if (tool === "run_command") {
+    return "Run this command?";
   }
-  return "MiniCode requests permission";
+  if (["edit", "write", "apply_patch"].includes(tool)) {
+    return "Change workspace files?";
+  }
+  return "Allow this action?";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -208,8 +208,7 @@ export class MiniCodeTuiApp {
         break;
       case "session_settings":
         this.footer.setSessionSettings(
-          event.permission_mode,
-          event.approval_policy,
+          event.execution_mode,
           event.collaboration_mode,
         );
         break;

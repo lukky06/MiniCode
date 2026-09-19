@@ -16,8 +16,7 @@ export interface BackendClientOptions {
   provider?: string;
   model?: string;
   writeEnabled?: boolean;
-  approvalPolicy?: "on-request" | "never";
-  permissionMode?: "read-only" | "workspace-write" | "full-access";
+  executionMode?: "default" | "review-changes" | "full-access";
   sandboxMode?: "local" | "docker";
   sandboxImage?: string;
   collaborationMode?: "default" | "plan";
@@ -117,11 +116,8 @@ export function buildBackendArgs(options: BackendClientOptions): string[] {
   if (options.writeEnabled === false) {
     args.push("--no-write");
   }
-  if (options.approvalPolicy) {
-    args.push("--approval-policy", options.approvalPolicy);
-  }
-  if (options.permissionMode) {
-    args.push("--permission-mode", options.permissionMode);
+  if (options.executionMode) {
+    args.push("--execution-mode", options.executionMode);
   }
   if (options.collaborationMode) {
     args.push("--mode", options.collaborationMode);

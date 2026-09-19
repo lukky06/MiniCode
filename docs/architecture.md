@@ -169,13 +169,13 @@ MiniCode 对运行过程进行显式记录，包括：
 
 Trace 主要用于调试和复盘，Execution Journal 用于记录具有副作用的关键执行事实。
 
-## 9. Permission 与 Plan Mode
+## 9. Execution Mode 与 Plan Mode
 
-Permission Mode 控制当前 Run 可执行的副作用范围，Approval Policy 决定需要人工确认的操作。
+用户侧权限控制收敛为单一 Execution Mode：`default` 自动执行工作区修改和沙箱内普通命令，`review-changes` 对工作区修改等副作用增加人工确认，`full-access` 自动执行已经通过确定性策略的副作用。`--no-write` 独立控制写工具是否存在，Execution Mode 不能重新开启被关闭的写能力。
 
-`run_command` 使用 Sandbox-first 的语言无关策略。命令先经过少量 Hard Safety 不变量，再匹配用户声明的 argv token prefix `command_rules`；没有规则命中时，Docker 沙箱中的普通命令自动执行，本地宿主命令进入审批。`command_rules` 使用 `deny > ask > allow` 的固定优先级，不包含 Python、npm、Maven 等工具级解析逻辑。`read-only` Permission Mode 下 Docker 将 `/workspace` 只读挂载，写能力模式才使用读写挂载。
+`run_command` 使用 Sandbox-first 的语言无关策略。命令先经过 Hard Safety，再匹配用户声明的 argv token prefix `command_rules`；没有规则命中时，Docker 沙箱中的普通命令自动执行，本地宿主命令在需要交互确认的执行模式下进入审批。`command_rules` 使用 `deny > ask > allow` 的固定优先级，不包含 Python、npm、Maven 等工具级解析逻辑。
 
-确定性的 WorkspaceGuard、敏感路径和 Hard Safety 始终优先执行，权限模式、显式 `allow` 和人工审批都不会绕过这些边界。Session 级命令授权仅复用需要审批的非沙箱命令范围，不改变规则或沙箱能力。
+WorkspaceGuard、敏感路径和 Hard Safety 始终优先执行，Execution Mode、显式 `allow` 和人工审批都不会绕过这些边界。Session 级命令授权携带可读的命令 scope，只复用当前 Session 内匹配的非沙箱命令授权，不改变 Hard Safety 或 Sandbox 能力。
 
 Plan Mode 继续复用同一套 Agent Loop，只调整模型可见工具集合和运行规则。规划阶段只开放低风险只读能力，使模型可以检索仓库并形成计划，同时保持原有 Session、Context 和 Trace 链路。
 

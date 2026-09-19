@@ -38,8 +38,7 @@ class RunSession(BaseModel):
     provider: str = "openai"
     model: str | None = None
     no_write: bool = False
-    approval_policy: str = "on-request"
-    permission_mode: str = "read-only"
+    execution_mode: str = "default"
     sandbox_mode: str = "local"
     sandbox_image: str | None = None
     command_rules: list[dict[str, object]] = Field(default_factory=list)
@@ -127,8 +126,7 @@ class RunStore:
         model: str | None = None,
         conversation_session_id: str | None = None,
         no_write: bool = False,
-        approval_policy: str = "on-request",
-        permission_mode: str = "read-only",
+        execution_mode: str = "default",
         sandbox_mode: str = "local",
         sandbox_image: str | None = None,
         command_rules: list[dict[str, object]] | None = None,
@@ -160,8 +158,7 @@ class RunStore:
             provider=provider,
             model=model,
             no_write=no_write,
-            approval_policy=approval_policy,
-            permission_mode=permission_mode,
+            execution_mode=execution_mode,
             sandbox_mode=sandbox_mode,
             sandbox_image=sandbox_image,
             command_rules=list(command_rules or []),

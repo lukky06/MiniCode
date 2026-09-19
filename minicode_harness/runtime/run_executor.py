@@ -26,11 +26,9 @@ from minicode_harness.state import ReplSessionMemory, RunSession
 from minicode_harness.models import ModelClient, create_model_client
 from minicode_harness.output import OutputSink, emit_semantic_compaction_event
 from minicode_harness.policy import (
-    ApprovalPolicy,
     CommandRule,
-    DEFAULT_APPROVAL_POLICY,
-    DEFAULT_PERMISSION_MODE,
-    PermissionMode,
+    DEFAULT_EXECUTION_MODE,
+    ExecutionMode,
 )
 from minicode_harness.runtime.collaboration import (
     CollaborationMode,
@@ -64,8 +62,7 @@ class RunExecutionRequest(BaseModel):
     model: str | None = None
     dry_run: bool = False
     write_enabled: bool = True
-    approval_policy: ApprovalPolicy = DEFAULT_APPROVAL_POLICY
-    permission_mode: PermissionMode = DEFAULT_PERMISSION_MODE
+    execution_mode: ExecutionMode = DEFAULT_EXECUTION_MODE
     sandbox_mode: SandboxMode = SandboxMode.LOCAL
     sandbox_image: str | None = None
     command_rules: list[CommandRule] = Field(default_factory=list)
@@ -260,8 +257,7 @@ def build_agent_loop_from_session(
         memory_snapshot_path=memory_snapshot_path,
         long_term_context=long_term_context,
         enable_write=not session.no_write,
-        approval_policy=ApprovalPolicy(session.approval_policy),
-        permission_mode=PermissionMode(session.permission_mode),
+        execution_mode=ExecutionMode(session.execution_mode),
         collaboration_mode=CollaborationMode(session.collaboration_mode),
         approval_client=approval_client,
         user_input_client=user_input_client,
@@ -440,8 +436,7 @@ class RunExecutor:
                 else None
             ),
             no_write=True,
-            approval_policy=ApprovalPolicy.NEVER.value,
-            permission_mode=PermissionMode.READ_ONLY.value,
+            execution_mode=ExecutionMode.REVIEW_CHANGES.value,
             collaboration_mode=CollaborationMode.PLAN.value,
             skills="review",
             no_skills=False,
@@ -522,8 +517,7 @@ class RunExecutor:
                 else None
             ),
             no_write=not request.write_enabled,
-            approval_policy=request.approval_policy.value,
-            permission_mode=request.permission_mode.value,
+            execution_mode=request.execution_mode.value,
             sandbox_mode=request.sandbox_mode.value,
             sandbox_image=request.sandbox_image,
             command_rules=[rule.model_dump(mode="json") for rule in request.command_rules],
@@ -548,8 +542,7 @@ class RunExecutor:
             model=request.model,
             dry_run=request.dry_run,
             no_write=not request.write_enabled,
-            approval_policy=request.approval_policy.value,
-            permission_mode=request.permission_mode.value,
+            execution_mode=request.execution_mode.value,
             sandbox_mode=request.sandbox_mode.value,
             sandbox_image=request.sandbox_image,
             collaboration_mode=request.collaboration_mode.value,
@@ -585,7 +578,7 @@ class RunExecutor:
             request.sandbox_mode,
             image=request.sandbox_image,
             command_rules=request.command_rules,
-            workspace_writable=request.permission_mode != PermissionMode.READ_ONLY,
+            workspace_writable=request.write_enabled,
         )
         repository_memory = None
         memory_source = None

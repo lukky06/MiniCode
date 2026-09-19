@@ -18,7 +18,7 @@ from minicode_harness.report import (
 )
 from minicode_harness.resume import latest_recoverable_run_id, resume_run
 from minicode_harness.state import UserInputRequest
-from minicode_harness.policy import ApprovalPolicy, PermissionMode
+from minicode_harness.policy import ExecutionMode
 from minicode_harness.runtime import CollaborationMode
 from minicode_harness.terminal.status import (
     build_terminal_status,
@@ -42,14 +42,8 @@ _COMMAND_SPECS = (
     CommandSpec(
         "permissions",
         "View or change runtime permissions",
-        "[mode <value> | approval <value>]",
-        (
-            "mode read-only",
-            "mode workspace-write",
-            "mode full-access",
-            "approval on-request",
-            "approval never",
-        ),
+        "[default|review-changes|full-access]",
+        ("default", "review-changes", "full-access"),
     ),
     CommandSpec(
         "sandbox",
@@ -358,56 +352,34 @@ class SlashCommandRouter:
     ) -> CommandResult:
         settings = context.session_settings
         if not command.arguments and context.user_input_client is not None:
-            mode_response = context.user_input_client.choose(
+            response = context.user_input_client.choose(
                 UserInputRequest(
-                    question="Choose the permission mode for subsequent Runs.",
+                    question="Choose how MiniCode may execute admitted actions.",
                     options=[
                         {
-                            "label": "Read only",
-                            "description": "Read and inspect; side effects require approval or stay unavailable.",
+                            "label": "Default",
+                            "description": "Edit workspace files and run sandboxed commands automatically; ask before crossing the sandbox boundary.",
                         },
                         {
-                            "label": "Workspace write",
-                            "description": "Allow admitted workspace edits without per-edit approval.",
+                            "label": "Review changes",
+                            "description": "Ask before workspace changes or other admitted side effects.",
                         },
                         {
                             "label": "Full access",
-                            "description": "Allow admitted side effects with fewer approval prompts.",
+                            "description": "Run admitted side effects automatically; hard safety rules still apply.",
                         },
                     ],
                 )
             )
-            selected_permission_mode = (
-                PermissionMode.READ_ONLY,
-                PermissionMode.WORKSPACE_WRITE,
-                PermissionMode.FULL_ACCESS,
-            )[mode_response.selected_index]
-            approval_response = context.user_input_client.choose(
-                UserInputRequest(
-                    question="Choose the approval policy for subsequent Runs.",
-                    options=[
-                        {
-                            "label": "On request",
-                            "description": "Ask when the active permission mode requires approval.",
-                        },
-                        {
-                            "label": "Never",
-                            "description": "Do not prompt; denied operations remain blocked.",
-                        },
-                    ],
-                )
-            )
-            selected_approval_policy = (
-                ApprovalPolicy.ON_REQUEST,
-                ApprovalPolicy.NEVER,
-            )[approval_response.selected_index]
-            settings.permission_mode = selected_permission_mode
-            settings.approval_policy = selected_approval_policy
+            settings.execution_mode = (
+                ExecutionMode.DEFAULT,
+                ExecutionMode.REVIEW_CHANGES,
+                ExecutionMode.FULL_ACCESS,
+            )[response.selected_index]
             return CommandResult(
                 status="completed",
                 content=(
-                    f"Permission mode: {settings.permission_mode.value}\n"
-                    f"Approval policy: {settings.approval_policy.value}\n"
+                    f"Execution mode: {settings.execution_mode.value}\n"
                     "Applied to subsequent Runs."
                 ),
             )
@@ -418,8 +390,7 @@ class SlashCommandRouter:
                     [
                         f"Workspace: {context.workspace}",
                         f"Write tools enabled: {context.write_enabled}",
-                        f"Permission mode: {settings.permission_mode.value}",
-                        f"Approval policy: {settings.approval_policy.value}",
+                        f"Execution mode: {settings.execution_mode.value}",
                         f"Command sandbox: {settings.sandbox_mode.value}",
                         *(
                             [f"Sandbox image: {settings.sandbox_image}"]
@@ -432,33 +403,19 @@ class SlashCommandRouter:
                     ]
                 ),
             )
-        if len(command.arguments) != 2:
+        if len(command.arguments) != 1:
             raise ValueError(
-                "/permissions accepts: status, mode <value>, or approval <value>."
+                "/permissions accepts: status, default, review-changes, or full-access."
             )
-        field, value = (item.strip().lower() for item in command.arguments)
-        if field == "mode":
-            try:
-                settings.permission_mode = PermissionMode(value)
-            except ValueError as exc:
-                raise ValueError(
-                    "Permission mode must be read-only, workspace-write, or full-access."
-                ) from exc
-            return CommandResult(
-                status="completed",
-                content=f"Permission mode set to {settings.permission_mode.value} for subsequent Runs.",
-            )
-        if field == "approval":
-            try:
-                settings.approval_policy = ApprovalPolicy(value)
-            except ValueError as exc:
-                raise ValueError("Approval policy must be on-request or never.") from exc
-            return CommandResult(
-                status="completed",
-                content=f"Approval policy set to {settings.approval_policy.value} for subsequent Runs.",
-            )
-        raise ValueError(
-            "/permissions accepts: status, mode <value>, or approval <value>."
+        try:
+            settings.execution_mode = ExecutionMode(command.arguments[0].strip().lower())
+        except ValueError as exc:
+            raise ValueError(
+                "Execution mode must be default, review-changes, or full-access."
+            ) from exc
+        return CommandResult(
+            status="completed",
+            content=f"Execution mode set to {settings.execution_mode.value} for subsequent Runs.",
         )
 
     @staticmethod

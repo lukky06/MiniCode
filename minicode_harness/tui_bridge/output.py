@@ -57,8 +57,7 @@ class JsonlOutputSink:
     def session_settings(self, settings: TerminalSessionSettings) -> None:
         self.writer.emit(
             SessionSettingsEvent(
-                permission_mode=settings.permission_mode.value,
-                approval_policy=settings.approval_policy.value,
+                execution_mode=settings.execution_mode.value,
                 collaboration_mode=settings.collaboration_mode.value,
             )
         )

@@ -11,8 +11,7 @@ export type ServerMessage =
   | { type: "command_catalog"; commands: CommandCatalogItem[] }
   | {
       type: "session_settings";
-      permission_mode: "read-only" | "workspace-write" | "full-access";
-      approval_policy: "on-request" | "never";
+      execution_mode: "default" | "review-changes" | "full-access";
       collaboration_mode: "default" | "plan";
     }
   | { type: "run_started"; run_id: string }
@@ -59,7 +58,7 @@ export type ServerMessage =
       tool: string;
       summary?: string | null;
       details?: string | null;
-      can_approve_session?: boolean;
+      session_scope?: string | null;
     }
   | {
       type: "user_input_required";
@@ -89,7 +88,7 @@ export type ClientMessage =
   | {
       type: "approval_response";
       id: string;
-      decision: "approve" | "approve_session" | "reject" | "skip" | "abort";
+      decision: "approve" | "approve_session" | "reject";
     }
   | {
       type: "user_input_response";
@@ -172,15 +171,11 @@ function validateRequiredFields(value: Record<string, unknown>): void {
     case "session_settings":
       exactKeys(value, [
         "type",
-        "permission_mode",
-        "approval_policy",
+        "execution_mode",
         "collaboration_mode",
       ]);
-      if (!["read-only", "workspace-write", "full-access"].includes(String(value.permission_mode))) {
-        throw new Error("Expected permission mode");
-      }
-      if (!["on-request", "never"].includes(String(value.approval_policy))) {
-        throw new Error("Expected approval policy");
+      if (!["default", "review-changes", "full-access"].includes(String(value.execution_mode))) {
+        throw new Error("Expected execution mode");
       }
       if (!["default", "plan"].includes(String(value.collaboration_mode))) {
         throw new Error("Expected collaboration mode");
@@ -259,19 +254,14 @@ function validateRequiredFields(value: Record<string, unknown>): void {
         "tool",
         "summary",
         "details",
-        "can_approve_session",
+        "session_scope",
       ]);
       requireString(value, "id");
       requireString(value, "tool_call_id");
       requireString(value, "tool");
       requireOptionalString(value, "summary");
       requireOptionalString(value, "details");
-      if (
-        value.can_approve_session !== undefined &&
-        typeof value.can_approve_session !== "boolean"
-      ) {
-        throw new Error("Expected boolean field: can_approve_session");
-      }
+      requireOptionalString(value, "session_scope");
       return;
     case "user_input_required":
       exactKeys(value, ["type", "id", "question", "options"]);

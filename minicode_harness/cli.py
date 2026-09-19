@@ -27,12 +27,7 @@ from .memory.migration import migrate_v2_topics
 from .memory.store import RepositoryMemoryStore
 from .models import ModelClientConfigurationError, create_model_client
 from .output import TextOutputSink
-from .policy import (
-    ApprovalPolicy,
-    DEFAULT_APPROVAL_POLICY,
-    DEFAULT_PERMISSION_MODE,
-    PermissionMode,
-)
+from .policy import DEFAULT_EXECUTION_MODE, ExecutionMode
 from .report import format_run_trace, generate_run_report
 from .resume import latest_recoverable_run_id, resume_run
 from .runtime import CollaborationMode, DEFAULT_COLLABORATION_MODE
@@ -92,8 +87,7 @@ INTERACTIVE_OPTIONS_WITH_VALUES = {
     "--skills",
     "--mcp-config",
     "--worktree",
-    "--approval-policy",
-    "--permission-mode",
+    "--execution-mode",
     "--sandbox",
     "--sandbox-image",
     "--mode",
@@ -116,8 +110,7 @@ class InteractiveLaunch:
     provider: str | None = None
     model: str | None = None
     no_write: bool = False
-    approval_policy: ApprovalPolicy | None = None
-    permission_mode: PermissionMode | None = None
+    execution_mode: ExecutionMode | None = None
     sandbox_mode: SandboxMode | None = None
     sandbox_image: str | None = None
     collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
@@ -177,15 +170,10 @@ def exec_command(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Create no external side effects."),
     no_write: bool = typer.Option(False, "--no-write", help="Disable write tools."),
-    approval_policy: Optional[ApprovalPolicy] = typer.Option(
+    execution_mode: Optional[ExecutionMode] = typer.Option(
         None,
-        "--approval-policy",
-        help="Approval prompting policy: on-request or never.",
-    ),
-    permission_mode: Optional[PermissionMode] = typer.Option(
-        None,
-        "--permission-mode",
-        help="Automatic side-effect scope: read-only, workspace-write, or full-access.",
+        "--execution-mode",
+        help="Execution mode: default, review-changes, or full-access.",
     ),
     sandbox: Optional[SandboxMode] = typer.Option(
         None,
@@ -236,12 +224,8 @@ def exec_command(
         user_config = _load_user_config()
         resolved_provider = _resolve_provider(provider, config=user_config)
         resolved_model = _resolve_model(model, config=user_config)
-        resolved_approval_policy = _resolve_approval_policy(
-            approval_policy,
-            config=user_config,
-        )
-        resolved_permission_mode = _resolve_permission_mode(
-            permission_mode,
+        resolved_execution_mode = _resolve_execution_mode(
+            execution_mode,
             config=user_config,
         )
         resolved_sandbox = _resolve_sandbox_mode(sandbox, config=user_config)
@@ -264,8 +248,7 @@ def exec_command(
         model=resolved_model,
         dry_run=dry_run,
         write_enabled=not no_write,
-        approval_policy=resolved_approval_policy,
-        permission_mode=resolved_permission_mode,
+        execution_mode=resolved_execution_mode,
         sandbox_mode=resolved_sandbox,
         sandbox_image=resolved_sandbox_image,
         command_rules=list(user_config.command_rules),
@@ -334,13 +317,9 @@ def resume(
     provider: Optional[str] = typer.Option(None, "--provider"),
     model: Optional[str] = typer.Option(None, "--model"),
     no_write: bool = typer.Option(False, "--no-write"),
-    approval_policy: Optional[ApprovalPolicy] = typer.Option(
+    execution_mode: Optional[ExecutionMode] = typer.Option(
         None,
-        "--approval-policy",
-    ),
-    permission_mode: Optional[PermissionMode] = typer.Option(
-        None,
-        "--permission-mode",
+        "--execution-mode",
     ),
     sandbox: Optional[SandboxMode] = typer.Option(
         None,
@@ -372,8 +351,7 @@ def resume(
         provider=provider,
         model=model,
         no_write=no_write,
-        approval_policy=approval_policy,
-        permission_mode=permission_mode,
+        execution_mode=execution_mode,
         sandbox_mode=sandbox,
         sandbox_image=sandbox_image,
         collaboration_mode=mode,
@@ -1076,12 +1054,8 @@ def _run_terminal(launch: InteractiveLaunch) -> None:
         launch.workspace,
         launch.worktree,
     )
-    approval_policy = _resolve_approval_policy(
-        launch.approval_policy,
-        config=user_config,
-    )
-    permission_mode = _resolve_permission_mode(
-        launch.permission_mode,
+    execution_mode = _resolve_execution_mode(
+        launch.execution_mode,
         config=user_config,
     )
     sandbox_mode = _resolve_sandbox_mode(
@@ -1093,8 +1067,7 @@ def _run_terminal(launch: InteractiveLaunch) -> None:
         provider=_resolve_provider(launch.provider, config=user_config),
         model=_resolve_model(launch.model, config=user_config),
         write_enabled=not launch.no_write,
-        approval_policy=approval_policy.value,
-        permission_mode=permission_mode.value,
+        execution_mode=execution_mode.value,
         sandbox_mode=sandbox_mode.value,
         sandbox_image=_resolve_sandbox_image(
             sandbox_mode,
@@ -1184,8 +1157,7 @@ def _main_help(program_name: str) -> str:
             "",
             "Task options:",
             "  --no-write             Disable write tools",
-            "  --permission-mode <m>  read-only, workspace-write, or full-access",
-            "  --approval-policy <p>  on-request or never",
+            "  --execution-mode <m>   default, review-changes, or full-access",
             "  --sandbox <m>          local or docker",
             "  --sandbox-image <img>  Docker image for --sandbox docker",
             "  --mode <m>             default or plan",
@@ -1199,7 +1171,7 @@ def _main_help(program_name: str) -> str:
             "  exec only: --dry-run, --debug-trace, --plain",
             "",
             "User defaults:",
-            "  ~/.minicode/config.toml  provider, model, permission_mode, approval_policy, sandbox, sandbox_image, command_rules",
+            "  ~/.minicode/config.toml  provider, model, execution_mode, sandbox, sandbox_image, command_rules",
             "  precedence: CLI > existing environment defaults > user config > code defaults",
             "",
             "Environment defaults:",
@@ -1215,27 +1187,15 @@ def _main_help(program_name: str) -> str:
     )
 
 
-def _parse_approval_policy(value: str | None) -> ApprovalPolicy:
+def _parse_execution_mode(value: str | None) -> ExecutionMode:
     if value is None:
-        return DEFAULT_APPROVAL_POLICY
+        return DEFAULT_EXECUTION_MODE
     try:
-        return ApprovalPolicy(value.strip().lower())
+        return ExecutionMode(value.strip().lower())
     except ValueError as exc:
-        choices = ", ".join(item.value for item in ApprovalPolicy)
+        choices = ", ".join(item.value for item in ExecutionMode)
         raise ValueError(
-            f"Invalid approval policy: {value}. Expected one of: {choices}."
-        ) from exc
-
-
-def _parse_permission_mode(value: str | None) -> PermissionMode:
-    if value is None:
-        return DEFAULT_PERMISSION_MODE
-    try:
-        return PermissionMode(value.strip().lower())
-    except ValueError as exc:
-        choices = ", ".join(item.value for item in PermissionMode)
-        raise ValueError(
-            f"Invalid permission mode: {value}. Expected one of: {choices}."
+            f"Invalid execution mode: {value}. Expected one of: {choices}."
         ) from exc
 
 
@@ -1263,26 +1223,15 @@ def _parse_collaboration_mode(value: str | None) -> CollaborationMode:
         ) from exc
 
 
-def _resolve_approval_policy(
-    value: ApprovalPolicy | str | None,
+def _resolve_execution_mode(
+    value: ExecutionMode | str | None,
     *,
     config: UserConfig | None = None,
-) -> ApprovalPolicy:
-    configured = value if value is not None else getattr(config, "approval_policy", None)
-    if isinstance(configured, ApprovalPolicy):
+) -> ExecutionMode:
+    configured = value if value is not None else getattr(config, "execution_mode", None)
+    if isinstance(configured, ExecutionMode):
         return configured
-    return _parse_approval_policy(configured)
-
-
-def _resolve_permission_mode(
-    value: PermissionMode | str | None,
-    *,
-    config: UserConfig | None = None,
-) -> PermissionMode:
-    configured = value if value is not None else getattr(config, "permission_mode", None)
-    if isinstance(configured, PermissionMode):
-        return configured
-    return _parse_permission_mode(configured)
+    return _parse_execution_mode(configured)
 
 
 def _resolve_sandbox_mode(
@@ -1431,12 +1380,8 @@ def _parse_interactive_task_args(args: list[str]) -> InteractiveLaunch:
         provider=_resolve_provider(values.get("--provider"), config=user_config),
         model=_resolve_model(values.get("--model"), config=user_config),
         no_write="--no-write" in flags,
-        approval_policy=_resolve_approval_policy(
-            values.get("--approval-policy"),
-            config=user_config,
-        ),
-        permission_mode=_resolve_permission_mode(
-            values.get("--permission-mode"),
+        execution_mode=_resolve_execution_mode(
+            values.get("--execution-mode"),
             config=user_config,
         ),
         sandbox_mode=_resolve_sandbox_mode(

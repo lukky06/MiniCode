@@ -73,15 +73,11 @@ function validateRequiredFields(value) {
     case "session_settings":
       exactKeys(value, [
         "type",
-        "permission_mode",
-        "approval_policy",
+        "execution_mode",
         "collaboration_mode"
       ]);
-      if (!["read-only", "workspace-write", "full-access"].includes(String(value.permission_mode))) {
-        throw new Error("Expected permission mode");
-      }
-      if (!["on-request", "never"].includes(String(value.approval_policy))) {
-        throw new Error("Expected approval policy");
+      if (!["default", "review-changes", "full-access"].includes(String(value.execution_mode))) {
+        throw new Error("Expected execution mode");
       }
       if (!["default", "plan"].includes(String(value.collaboration_mode))) {
         throw new Error("Expected collaboration mode");
@@ -157,16 +153,14 @@ function validateRequiredFields(value) {
         "tool",
         "summary",
         "details",
-        "can_approve_session"
+        "session_scope"
       ]);
       requireString(value, "id");
       requireString(value, "tool_call_id");
       requireString(value, "tool");
       requireOptionalString(value, "summary");
       requireOptionalString(value, "details");
-      if (value.can_approve_session !== void 0 && typeof value.can_approve_session !== "boolean") {
-        throw new Error("Expected boolean field: can_approve_session");
-      }
+      requireOptionalString(value, "session_scope");
       return;
     case "user_input_required":
       exactKeys(value, ["type", "id", "question", "options"]);
@@ -333,11 +327,8 @@ function buildBackendArgs(options) {
   if (options.writeEnabled === false) {
     args.push("--no-write");
   }
-  if (options.approvalPolicy) {
-    args.push("--approval-policy", options.approvalPolicy);
-  }
-  if (options.permissionMode) {
-    args.push("--permission-mode", options.permissionMode);
+  if (options.executionMode) {
+    args.push("--execution-mode", options.executionMode);
   }
   if (options.collaborationMode) {
     args.push("--mode", options.collaborationMode);
@@ -13250,8 +13241,7 @@ var Footer = class {
   hint = "Ctrl+C exit";
   contextUsed = null;
   promptBudget = null;
-  permissionMode = "read-only";
-  approvalPolicy = "on-request";
+  executionMode = "default";
   collaborationMode = "default";
   setText(text) {
     this.setStatus(text);
@@ -13265,9 +13255,8 @@ var Footer = class {
     this.contextUsed = Math.max(0, used);
     this.promptBudget = Math.max(1, promptBudget);
   }
-  setSessionSettings(permissionMode, approvalPolicy, collaborationMode) {
-    this.permissionMode = permissionMode;
-    this.approvalPolicy = approvalPolicy;
+  setSessionSettings(executionMode, collaborationMode) {
+    this.executionMode = executionMode;
     this.collaborationMode = collaborationMode;
   }
   invalidate() {
@@ -13300,7 +13289,7 @@ var Footer = class {
   }
   modeLabel() {
     const prefix = this.collaborationMode === "plan" ? "plan \xB7 " : "";
-    return ui.dim(`${prefix}${this.permissionMode} \xB7 ${this.approvalPolicy}`);
+    return ui.dim(`${prefix}${this.executionMode}`);
   }
   contextLabel() {
     if (this.contextUsed === null || this.promptBudget === null) return "";
@@ -13401,7 +13390,7 @@ var ApprovalOverlay = class {
       this.onDecision("approve");
       return;
     }
-    if (this.event.can_approve_session && matchesKey(data, "g")) {
+    if (this.event.session_scope && matchesKey(data, "g")) {
       this.onDecision("approve_session");
       return;
     }
@@ -13409,27 +13398,15 @@ var ApprovalOverlay = class {
       this.onDecision("reject");
       return;
     }
-    if (matchesKey(data, "s")) {
-      this.onDecision("skip");
-      return;
-    }
-    if (matchesKey(data, "a")) {
-      this.onDecision("abort");
-      return;
-    }
     if (matchesKey(data, "v")) {
       this.showDetails = !this.showDetails;
-      return;
-    }
-    if (matchesKey(data, Key.escape)) {
-      this.onDecision("abort");
     }
   }
   render(width) {
     const preview = approvalPreview(this.event.details);
     const lines = [
-      ui.warning("! ACTION REQUIRED"),
-      ui.bold(approvalAction(this.event.tool)),
+      ui.warning("! PERMISSION REQUIRED"),
+      ui.bold(approvalQuestion(this.event.tool)),
       ""
     ];
     if (preview.command) {
@@ -13439,9 +13416,6 @@ var ApprovalOverlay = class {
     } else if (this.event.summary) {
       lines.push(this.event.summary, "");
     }
-    if (preview.riskLevel) {
-      lines.push(`${ui.muted("Risk")}    ${ui.warning(preview.riskLevel.toUpperCase())}`);
-    }
     if (preview.reason) {
       lines.push(`${ui.muted("Reason")}  ${preview.reason}`);
     }
@@ -13449,16 +13423,21 @@ var ApprovalOverlay = class {
       lines.push(ui.muted("Effects"));
       lines.push(...preview.effects.slice(0, 3).map((effect) => `  - ${effect}`));
     }
-    if (preview.riskLevel || preview.reason || preview.effects.length > 0) {
+    if (this.event.session_scope) {
+      lines.push(
+        `${ui.muted("Session scope")}  ${ui.code(this.event.session_scope)}`
+      );
+    }
+    if (preview.reason || preview.effects.length > 0 || this.event.session_scope) {
       lines.push("");
     }
     if (this.showDetails && this.event.details) {
       lines.push(this.event.details, "");
     }
-    const grant = this.event.can_approve_session ? `  ${ui.success("[G] Allow for this session")}` : "";
+    const grant = this.event.session_scope ? `  ${ui.success("[G] Allow similar this session")}` : "";
     lines.push(
       `${ui.success("[Y] Allow once")}${grant}  ${ui.error("[N] Reject")}`,
-      ui.muted("[S] Skip \xB7 [A] Abort \xB7 [V] Details")
+      ui.muted("[V] Details")
     );
     this.body.setText(lines.join("\n"));
     return this.body.render(width).map((line) => truncateToWidth(line, Math.max(0, width)));
@@ -13471,7 +13450,6 @@ function approvalPreview(details) {
     if (!isRecord2(raw)) return { effects: [] };
     const preview = isRecord2(raw.preview) ? raw.preview : {};
     return {
-      riskLevel: stringValue(raw.risk_level),
       command: stringValue(preview.command),
       path: stringValue(preview.path),
       reason: stringValue(preview.reason),
@@ -13481,12 +13459,14 @@ function approvalPreview(details) {
     return { effects: [] };
   }
 }
-function approvalAction(tool) {
-  if (tool === "run_command") return "MiniCode wants to run a command";
-  if (["edit", "write", "apply_patch"].includes(tool)) {
-    return "MiniCode wants to change workspace files";
+function approvalQuestion(tool) {
+  if (tool === "run_command") {
+    return "Run this command?";
   }
-  return "MiniCode requests permission";
+  if (["edit", "write", "apply_patch"].includes(tool)) {
+    return "Change workspace files?";
+  }
+  return "Allow this action?";
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13988,8 +13968,7 @@ var MiniCodeTuiApp = class {
         break;
       case "session_settings":
         this.footer.setSessionSettings(
-          event.permission_mode,
-          event.approval_policy,
+          event.execution_mode,
           event.collaboration_mode
         );
         break;
@@ -14303,8 +14282,7 @@ var backend = new BackendClient({
   provider: process.env.MINICODE_PROVIDER,
   model: process.env.MINICODE_MODEL,
   writeEnabled: process.env.MINICODE_TUI_NO_WRITE !== "1",
-  approvalPolicy: process.env.MINICODE_TUI_APPROVAL_POLICY,
-  permissionMode: process.env.MINICODE_TUI_PERMISSION_MODE,
+  executionMode: process.env.MINICODE_TUI_EXECUTION_MODE,
   collaborationMode: process.env.MINICODE_TUI_COLLABORATION_MODE,
   sandboxMode: process.env.MINICODE_TUI_SANDBOX_MODE,
   sandboxImage: process.env.MINICODE_TUI_SANDBOX_IMAGE,

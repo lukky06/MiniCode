@@ -28,7 +28,7 @@ def _request(request_id: str = "approval_1") -> ApprovalRequest:
             "argv": ["pytest", "secret-model-argument"],
             "api_key": "must-not-cross-protocol",
         },
-        can_approve_session=True,
+        session_scope="pytest tests/test_x.py",
         preview={
             "summary": "Run focused tests",
             "command": "pytest tests/test_x.py -q",
@@ -58,7 +58,7 @@ def test_approval_client_emits_safe_preview_and_resolves_matching_id() -> None:
     assert event.id == "approval_1"
     assert event.tool_call_id == "call_1"
     assert event.summary == "Run focused tests"
-    assert event.can_approve_session is True
+    assert event.session_scope == "pytest tests/test_x.py"
     assert "pytest tests/test_x.py -q" in (event.details or "")
     assert "must-not-cross-protocol" not in stream.getvalue()
     assert "secret-model-argument" not in stream.getvalue()
@@ -94,9 +94,9 @@ def test_stale_approval_id_does_not_resolve_current_request() -> None:
     assert error == "Stale approval response: old_approval."
     assert client.has_pending() is True
 
-    assert client.resolve("approval_1", "skip") == (True, None)
+    assert client.resolve("approval_1", "reject") == (True, None)
     thread.join(1.0)
-    assert result["response"].decision == ApprovalDecision.SKIP
+    assert result["response"].decision == ApprovalDecision.REJECT
 
 
 def test_cancellation_aborts_pending_approval_without_tui_response() -> None:
@@ -142,7 +142,7 @@ def test_parallel_approval_calls_are_serialized_to_one_visible_pending() -> None
     ]
     assert [event.id for event in events] == ["approval_1", "approval_2"]
 
-    assert client.resolve("approval_2", "abort") == (True, None)
+    assert client.resolve("approval_2", "reject") == (True, None)
     second.join(1.0)
     assert results["first"].decision == ApprovalDecision.REJECT
-    assert results["second"].decision == ApprovalDecision.ABORT
+    assert results["second"].decision == ApprovalDecision.REJECT

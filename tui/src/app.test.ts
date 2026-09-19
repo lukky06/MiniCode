@@ -157,19 +157,16 @@ test("session settings stay visible in the footer", () => {
 
   app.handleServerEvent({
     type: "session_settings",
-    permission_mode: "workspace-write",
-    approval_policy: "on-request",
+    execution_mode: "review-changes",
     collaboration_mode: "default",
   });
 
   const normal = stripTerminalSequences(app.footer.render(96).join("\n"));
-  assert.match(normal, /workspace-write/);
-  assert.match(normal, /on-request/);
+  assert.match(normal, /review-changes/);
 
   app.handleServerEvent({
     type: "session_settings",
-    permission_mode: "workspace-write",
-    approval_policy: "on-request",
+    execution_mode: "review-changes",
     collaboration_mode: "plan",
   });
   const plan = stripTerminalSequences(app.footer.render(96).join("\n"));
@@ -427,9 +424,8 @@ test("approval overlay owns input and returns the exact approval id", () => {
     tool_call_id: "call_1",
     tool: "run_command",
     summary: "Run focused tests",
-    can_approve_session: true,
+    session_scope: "mvn -q test",
     details: JSON.stringify({
-      risk_level: "high",
       preview: {
         command: "mvn -q test",
         reason: "Command needs explicit approval.",
@@ -446,7 +442,7 @@ test("approval overlay owns input and returns the exact approval id", () => {
   assert.ok(bounds.row + bounds.height >= terminal.rows - 6);
   assert.ok(bounds.row + bounds.height <= terminal.rows - 3);
   const approvalFrame = latestFrame(terminal);
-  assert.match(approvalFrame, /ACTION REQUIRED/);
+  assert.match(approvalFrame, /PERMISSION REQUIRED/);
   assert.match(approvalFrame, /Permission required/);
   assert.match(
     stripTerminalSequences(app.transcript.render(100).join("\n")),
@@ -592,8 +588,8 @@ test("command catalog powers slash completion and tab completion", async () => {
       {
         name: "permissions",
         description: "View or change runtime permissions",
-        argument_hint: "[mode <value>]",
-        argument_choices: ["mode read-only", "mode workspace-write"],
+        argument_hint: "[default|review-changes|full-access]",
+        argument_choices: ["default", "review-changes", "full-access"],
         availability: "idle",
       },
       {
@@ -616,11 +612,11 @@ test("command catalog powers slash completion and tab completion", async () => {
   terminal.sendInput("\t");
   assert.equal(app.editor.getText(), "/permissions ");
 
-  terminal.sendInput("mode w");
+  terminal.sendInput("rev");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.match(
     stripTerminalSequences(app.editor.render(90).join("\n")),
-    /mode workspace-write/,
+    /review-changes/,
   );
   app.stop();
 });
@@ -635,21 +631,21 @@ test("slash command argument tab completion never falls through to workspace fil
       {
         name: "permissions",
         description: "View or change runtime permissions",
-        argument_hint: "[mode <value>]",
-        argument_choices: ["mode read-only", "mode workspace-write"],
+        argument_hint: "[default|review-changes|full-access]",
+        argument_choices: ["default", "review-changes", "full-access"],
         availability: "idle",
       },
     ],
   });
 
-  terminal.sendInput("/permissions mode read-only ");
+  terminal.sendInput("/permissions review-changes ");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(app.editor.isShowingAutocomplete(), false);
 
   terminal.sendInput("\t");
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  assert.equal(app.editor.getText(), "/permissions mode read-only ");
+  assert.equal(app.editor.getText(), "/permissions review-changes ");
   assert.equal(app.editor.isShowingAutocomplete(), false);
   app.stop();
 });
