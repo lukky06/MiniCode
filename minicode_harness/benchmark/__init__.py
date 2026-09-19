@@ -10,7 +10,6 @@ from .runner import BenchmarkRunner, BenchmarkRunnerConfig
 from .scenario_models import (
     BenchmarkContextQualityExpectation,
     BenchmarkContextQualityResult,
-    BenchmarkLifecycle,
     BenchmarkScenario,
     BenchmarkScenarioResult,
     BenchmarkScenarioSummary,
@@ -30,7 +29,6 @@ __all__ = [
     "BenchmarkTaskResult",
     "BenchmarkContextQualityExpectation",
     "BenchmarkContextQualityResult",
-    "BenchmarkLifecycle",
     "BenchmarkScenario",
     "BenchmarkScenarioResult",
     "BenchmarkScenarioRunner",

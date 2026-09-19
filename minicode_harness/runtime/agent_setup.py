@@ -18,7 +18,7 @@ from minicode_harness.context import (
 )
 from minicode_harness.hooks import HookManager, default_hook_manager
 from minicode_harness.mcp import MCPManager
-from minicode_harness.memory import RepositoryMemoryStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.models import ModelCapabilities, ModelClient
 from minicode_harness.output import (
     NullOutputSink,
@@ -124,7 +124,8 @@ def build_agent_components(
     mcp_config: Path | str | None,
     command_executor: CommandExecutor | None,
     subagent_handler: Callable[[str], Any] | None,
-    memory_topic_reader: Callable[[str], dict[str, str]] | None,
+    memory_reader: Callable[..., dict[str, Any]] | None,
+    memory_searcher: Callable[..., dict[str, Any]] | None,
     initial_task_state: TaskListState | None,
     initial_observations: list[ContextObservation],
     run_state: RunState,
@@ -209,8 +210,13 @@ def build_agent_components(
             skill_names=[skill.name for skill in available_skills],
             mcp_manager=resolved_mcp_manager,
             subagent_handler=subagent_handler if enable_subagents else None,
-            memory_topic_reader=(
-                memory_topic_reader
+            memory_reader=(
+                memory_reader
+                if repository_memory is not None and repository_memory_enabled
+                else None
+            ),
+            memory_searcher=(
+                memory_searcher
                 if repository_memory is not None and repository_memory_enabled
                 else None
             ),

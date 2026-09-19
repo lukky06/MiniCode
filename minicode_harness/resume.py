@@ -16,14 +16,14 @@ from minicode_harness.context import (
 )
 from minicode_harness.context.limits import MAX_CHECKPOINT_OBSERVATIONS
 from minicode_harness.loop import AgentLoop, AgentRunResult
-from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
+from minicode_harness.memory.snapshot import MemorySnapshotStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
 from minicode_harness.models import ModelClient, NormalizedToolCall, create_model_client
 from minicode_harness.output import OutputSink
 from minicode_harness.policy import CommandRule, PermissionMode
 from minicode_harness.runtime.collaboration import CollaborationMode
 from minicode_harness.runtime.cancellation import CancellationToken
-from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
 from minicode_harness.runtime.run_executor import build_agent_loop_from_session
 from minicode_harness.runtime.steering import SteeringQueue
 from minicode_harness.storage import HarnessDataStore
@@ -380,67 +380,64 @@ def resume_run(
         or (memory_store.data_dir if memory_store is not None else None)
     )
     repository_memory = None
-    request_orchestrator = None
     memory_snapshot_store = MemorySnapshotStore(run_path)
     memory_snapshot = None
-    if session.repository_memory_enabled:
+    has_memory_snapshot = bool(
+        checkpoint
+        and (
+            checkpoint.memory_snapshot_hash
+            or checkpoint.memory_snapshot_path
+        )
+    )
+    if session.repository_memory_enabled and has_memory_snapshot:
         repository_memory = RepositoryMemoryStore(
             session.workspace,
             data_dir=resolved_data_dir,
         )
-        request_orchestrator = RequestOrchestrator(
-            repository_memory=repository_memory,
-            trace_writer=trace_writer,
-            review_model_client=resolved_model_client,
-        )
-        if force_rebuild_context:
-            latest_memory = repository_memory.capture_snapshot_source()
-            memory_snapshot = memory_snapshot_store.save(
-                repository_id=repository_memory.repository_id,
-                rendered_index=latest_memory.rendered_index,
-                topic_payloads=latest_memory.topic_payloads,
+        try:
+            memory_snapshot = memory_snapshot_store.load(
+                expected_hash=(checkpoint.memory_snapshot_hash if checkpoint else None),
             )
-            snapshot_source = "latest_repository_memory"
-        else:
-            try:
-                memory_snapshot = memory_snapshot_store.load(
-                    expected_hash=(checkpoint.memory_snapshot_hash if checkpoint else None),
-                )
-            except ValueError as exc:
-                trace_writer.write_event(
-                    "resume_blocked",
-                    run_id=run_id,
-                    reason="memory_snapshot_invalid",
-                    error=str(exc),
-                )
-                return ResumeResult(
-                    status="blocked",
-                    run_id=run_id,
-                    reason="memory_snapshot_invalid",
-                )
-            if memory_snapshot is None:
-                trace_writer.write_event(
-                    "resume_blocked",
-                    run_id=run_id,
-                    reason="memory_snapshot_missing",
-                )
-                return ResumeResult(
-                    status="blocked",
-                    run_id=run_id,
-                    reason="memory_snapshot_missing",
-                )
-            snapshot_source = "original_run_snapshot"
-        long_term_context = memory_snapshot.rendered_index
+        except ValueError as exc:
+            trace_writer.write_event(
+                "resume_blocked",
+                run_id=run_id,
+                reason="memory_snapshot_invalid",
+                error=str(exc),
+            )
+            return ResumeResult(
+                status="blocked",
+                run_id=run_id,
+                reason="memory_snapshot_invalid",
+            )
+        if memory_snapshot is None:
+            trace_writer.write_event(
+                "resume_blocked",
+                run_id=run_id,
+                reason="memory_snapshot_missing",
+            )
+            return ResumeResult(
+                status="blocked",
+                run_id=run_id,
+                reason="memory_snapshot_missing",
+            )
+        long_term_context = memory_snapshot_store.read_summary()
         trace_writer.write_event(
             "memory_snapshot_restored",
             repository_id=memory_snapshot.repository_id,
             index_hash=memory_snapshot.index_hash,
             path=memory_snapshot_store.checkpoint_path,
-            source=snapshot_source,
+            source="original_run_snapshot",
             force_rebuild_context=force_rebuild_context,
         )
     else:
         long_term_context = ""
+        if session.repository_memory_enabled:
+            trace_writer.write_event(
+                "memory_snapshot_restore_skipped",
+                run_id=run_id,
+                reason="run_has_no_memory_snapshot",
+            )
     command_executor = create_command_executor(
         session.sandbox_mode,
         image=session.sandbox_image,
@@ -525,19 +522,6 @@ def resume_run(
         status=agent_result.status,
         current_step=agent_result.steps,
     )
-    if (
-        agent_result.status == "completed"
-        and agent_result.final_text
-        and request_orchestrator is not None
-    ):
-        request_orchestrator.finalize_completed_run(
-            run_id=run_id,
-            user_input=session.task,
-            assistant_text=agent_result.final_text,
-            observations=list(loop.observations),
-            modified_files=list(loop.modified_files),
-            verification=loop.run_state.verification,
-        )
     trace_writer.write_event(
         "resume_finished",
         run_id=run_id,

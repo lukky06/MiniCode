@@ -616,13 +616,13 @@ def test_agent_loop_exposes_tools_only_from_write_mode(tmp_path) -> None:
         search_schema["function"]["parameters"]["properties"]["path"]["description"]
     )
     assert "explicitly typed resource" in read_description
-    assert "Workspace and Artifact targets must identify a file" in read_description
+    assert "Workspace, Artifact, and Memory targets identify" in read_description
     assert "optional line ranges select an inclusive local range" in read_description
     assert "source=diff returns the current Git diff without a target" in read_description
-    assert "kind=files locates candidate paths by glob" in search_description
-    assert "narrow path/glob before widening depth/limit" in search_description
-    assert "whole-repository inventory" in search_description
+    assert "kind=files locates Workspace/Artifact candidate paths by glob" in search_description
     assert "kind=text searches matching lines" in search_description
+    assert "Memory supports text search" in search_description
+    assert "immutable Run-start MEMORY.md" in search_description
     assert "Results may truncate by bounds" in search_description
     assert "Source-relative file or directory to search" in search_path_description
     assert "'.' means the selected source root" in search_path_description

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from minicode_harness.memory import RepositoryMemoryStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import (
     CheckpointStore,
     ReplSessionStore,
@@ -206,22 +206,24 @@ def format_project_memory(
     *,
     repository_memory: RepositoryMemoryStore | None = None,
 ) -> str:
-    """Return the bounded Repository Memory index and workflow counts."""
+    """Return Repository Memory V3 state and the bounded summary."""
 
     resolved_workspace = Path(workspace).resolve()
     store = repository_memory or RepositoryMemoryStore(resolved_workspace)
-    index = store.index_store.ensure().content.rstrip()
+    state = store.load_state()
+    dirty = state.latest_stage1_seq > state.last_phase2_input_seq
+    summary = store.read_memory_summary().rstrip()
     return "\n".join(
         [
-            "Repository Memory",
+            "Repository Memory V3",
             f"Workspace: {resolved_workspace}",
             f"Repository ID: {store.repository_id}",
             f"Path: {store.memory_dir}",
-            f"Pending reviews: {len(store.workflow_store.pending_reviews())}",
-            "Pending candidates: "
-            f"{len(store.workflow_store.list_candidates(status='pending'))}",
+            f"Stage-1: {state.latest_stage1_seq}",
+            f"Consolidated through: {state.last_phase2_input_seq}",
+            f"Dirty: {'yes' if dirty else 'no'}",
             "",
-            index or "No durable memory Topics are registered.",
+            summary or "No durable memory summary.",
         ]
     )
 

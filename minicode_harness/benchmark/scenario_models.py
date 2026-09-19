@@ -17,7 +17,7 @@ from .models import (
 )
 
 
-MemoryMode = Literal["off", "index_only", "index_topic"]
+MemoryMode = Literal["off", "on"]
 ContextCompactionMode = Literal["deterministic", "llm_hard"]
 SemanticCompactionFault = Literal[
     "none",
@@ -43,20 +43,12 @@ FactLocation = Literal[
 
 
 class BenchmarkSeedMemory(BaseModel):
-    """One stable scenario-local alias for a seeded long-term-memory item."""
+    """One stable scenario-local durable-memory fact for A/B evaluation."""
 
     key: str
     content: str
     kind: Literal["preference", "workflow", "coding_style", "architecture"] = "preference"
-    topic: Literal[
-        "instructions",
-        "build-and-test",
-        "debugging",
-        "decisions",
-        "environment",
-    ] | None = None
     origin: Literal["explicit", "inferred"] = "explicit"
-    status: Literal["active", "inactive"] = "active"
 
 
 class BenchmarkFactExpectation(BaseModel):
@@ -113,23 +105,15 @@ class BenchmarkFileContentExpectation(BaseModel):
             raise ValueError("file-content expectations require required or forbidden keywords")
         return self
 
-class BenchmarkRepositoryMemoryTopicExpectation(BaseModel):
-    """Aggregated content Gold for one active Repository Memory Topic."""
-
-    required_keywords: list[str] = Field(default_factory=list)
-    forbidden_keywords: list[str] = Field(default_factory=list)
-
-
 class BenchmarkRepositoryMemoryExpectation(BaseModel):
-    """Durable Repository Memory state expected after a scenario."""
+    """Durable Memory V3 state expected after a scenario."""
 
     after_turn_id: str | None = None
-    pending_reviews: int | None = Field(default=None, ge=0)
-    pending_candidates: int | None = Field(default=None, ge=0)
-    registered_topics: list[str] | None = None
-    topics: dict[str, BenchmarkRepositoryMemoryTopicExpectation] = Field(
-        default_factory=dict
-    )
+    required_keywords: list[str] = Field(default_factory=list)
+    forbidden_keywords: list[str] = Field(default_factory=list)
+    summary_required_keywords: list[str] = Field(default_factory=list)
+    summary_forbidden_keywords: list[str] = Field(default_factory=list)
+    dirty: bool | None = None
     required_events: list[str] = Field(default_factory=list)
 
 
@@ -233,13 +217,6 @@ class BenchmarkScenarioTurn(BaseModel):
     session_key: str = "default"
     execution_mode: Literal["agent", "memory_only"] = "agent"
     assistant_text: str | None = None
-    expected_finalization_status: Literal[
-        "deferred",
-        "completed",
-        "failed",
-        "captured",
-        "idempotent_noop",
-    ] | None = None
     skills: list[str] = Field(default_factory=list)
     oracle: BenchmarkOracle = Field(default_factory=BenchmarkOracle)
     constraints: BenchmarkConstraints = Field(default_factory=BenchmarkConstraints)
@@ -253,30 +230,6 @@ class BenchmarkScenarioTurn(BaseModel):
     required_facts: list[BenchmarkFactExpectation] = Field(default_factory=list)
 
 
-class BenchmarkLifecycle(BaseModel):
-    """Producer-once lifecycle followed by isolated Consumer ablation forks."""
-
-    producer_turn_ids: list[str] = Field(min_length=1)
-    fork_after_turn_id: str
-    consumer_turn_ids: list[str] = Field(min_length=1)
-    consumer_ablation_modes: list[MemoryMode] = Field(min_length=1)
-    fresh_consumer_session: bool = True
-    expected_memory_entry_count: int | None = Field(default=None, ge=0)
-    min_index_topic_reads: int = Field(default=0, ge=0)
-    max_index_topic_reads: int | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def validate_topic_read_bounds(self) -> "BenchmarkLifecycle":
-        if (
-            self.max_index_topic_reads is not None
-            and self.max_index_topic_reads < self.min_index_topic_reads
-        ):
-            raise ValueError(
-                "lifecycle max_index_topic_reads must be at least min_index_topic_reads"
-            )
-        return self
-
-
 class BenchmarkScenario(BaseModel):
     """A multi-turn benchmark that shares workspace, session, and memory state."""
 
@@ -286,7 +239,7 @@ class BenchmarkScenario(BaseModel):
     difficulty: str = "medium"
     workspace: str
     setup: BenchmarkSetup = Field(default_factory=BenchmarkSetup)
-    memory_mode: MemoryMode = "index_topic"
+    memory_mode: MemoryMode = "on"
     ablation_modes: list[MemoryMode] = Field(default_factory=list)
     context_compaction_mode: ContextCompactionMode = "llm_hard"
     context_compaction_ablation_modes: list[ContextCompactionMode] = Field(
@@ -302,7 +255,6 @@ class BenchmarkScenario(BaseModel):
     context_budget: int | None = Field(default=None, ge=2000)
     reserved_output: int = Field(default=1000, ge=256)
     seed_memories: list[BenchmarkSeedMemory] = Field(default_factory=list)
-    lifecycle: BenchmarkLifecycle | None = None
     expected_repository_memory: BenchmarkRepositoryMemoryExpectation | None = None
     required_trace_events: list[str] = Field(default_factory=list)
     required_turn_ids: list[str] = Field(default_factory=list)
@@ -344,67 +296,6 @@ class BenchmarkScenario(BaseModel):
             )
         if len(self.ablation_modes) != len(set(self.ablation_modes)):
             raise ValueError("ablation_modes must be unique")
-        if self.lifecycle is not None:
-            lifecycle = self.lifecycle
-            producer_ids = lifecycle.producer_turn_ids
-            consumer_ids = lifecycle.consumer_turn_ids
-            if len(producer_ids) != len(set(producer_ids)):
-                raise ValueError("lifecycle producer_turn_ids must be unique")
-            if len(consumer_ids) != len(set(consumer_ids)):
-                raise ValueError("lifecycle consumer_turn_ids must be unique")
-            if set(producer_ids) & set(consumer_ids):
-                raise ValueError("lifecycle producer and consumer turns must not overlap")
-            unknown_lifecycle_turns = sorted(
-                (set(producer_ids) | set(consumer_ids)) - set(turn_ids)
-            )
-            if unknown_lifecycle_turns:
-                raise ValueError(
-                    "lifecycle references unknown turns: "
-                    + ", ".join(unknown_lifecycle_turns)
-                )
-            if set(producer_ids) | set(consumer_ids) != set(turn_ids):
-                raise ValueError("lifecycle must classify every scenario turn")
-            ordered_producers = [item for item in turn_ids if item in set(producer_ids)]
-            ordered_consumers = [item for item in turn_ids if item in set(consumer_ids)]
-            if producer_ids != ordered_producers or consumer_ids != ordered_consumers:
-                raise ValueError("lifecycle turn IDs must follow scenario turn order")
-            if turn_ids != [*producer_ids, *consumer_ids]:
-                raise ValueError("all lifecycle Producer turns must precede Consumers")
-            if lifecycle.fork_after_turn_id != producer_ids[-1]:
-                raise ValueError("lifecycle fork_after_turn_id must be the last Producer turn")
-            if len(lifecycle.consumer_ablation_modes) != len(
-                set(lifecycle.consumer_ablation_modes)
-            ):
-                raise ValueError("lifecycle consumer_ablation_modes must be unique")
-            if self.ablation_modes:
-                raise ValueError(
-                    "lifecycle consumer_ablation_modes replace scenario ablation_modes"
-                )
-            if self.seed_memories:
-                raise ValueError("lifecycle scenarios must not declare seed_memories")
-            if self.memory_mode != "index_topic":
-                raise ValueError("lifecycle Producer memory_mode must be index_topic")
-            if (
-                self.expected_repository_memory is not None
-                and self.expected_repository_memory.after_turn_id is not None
-                and self.expected_repository_memory.after_turn_id
-                != lifecycle.fork_after_turn_id
-            ):
-                raise ValueError(
-                    "Repository Memory Gold must be evaluated at the lifecycle fork Turn"
-                )
-            if lifecycle.fresh_consumer_session:
-                by_id = {turn.id: turn for turn in self.turns}
-                producer_sessions = {
-                    by_id[turn_id].session_key for turn_id in producer_ids
-                }
-                consumer_sessions = {
-                    by_id[turn_id].session_key for turn_id in consumer_ids
-                }
-                if producer_sessions & consumer_sessions:
-                    raise ValueError(
-                        "fresh lifecycle Consumer sessions must not reuse Producer session keys"
-                    )
         if len(self.context_compaction_ablation_modes) != len(
             set(self.context_compaction_ablation_modes)
         ):
@@ -528,9 +419,9 @@ class BenchmarkScenarioTurnMetrics(BaseModel):
     read_tool_calls: int = 0
     unique_read_resources: int = 0
     repeated_read_calls: int = 0
-    memory_topic_read_count: int = 0
-    unique_memory_topics: int = 0
-    repeated_memory_topic_reads: int = 0
+    memory_read_count: int = 0
+    unique_memory_resources: int = 0
+    repeated_memory_reads: int = 0
     history_compaction_tokens_removed: int = 0
     history_compaction_tokens_retained: int = 0
 
@@ -544,10 +435,6 @@ class BenchmarkScenarioTurnResult(BaseModel):
     session_id: str | None = None
     stop_reason: str | None = None
     final_text: str | None = None
-    memory_finalization_status: str | None = None
-    memory_pending_user_turns: int = 0
-    memory_batch_user_turns: int = 0
-    memory_finalization_passed: bool = True
     oracle: dict[str, Any] = Field(default_factory=dict)
     recall: BenchmarkRecallResult = Field(default_factory=BenchmarkRecallResult)
     tool_call_checks: list[BenchmarkToolCallCheck] = Field(default_factory=list)
@@ -601,9 +488,9 @@ class BenchmarkScenarioResult(BaseModel):
     avg_context_tokens: float | None
     history_compression_ratio: float
     repeated_read_rate: float
-    memory_topic_read_count: int = 0
-    unique_memory_topics: int = 0
-    repeated_memory_topic_reads: int = 0
+    memory_read_count: int = 0
+    unique_memory_resources: int = 0
+    repeated_memory_reads: int = 0
     compaction_count: int = 0
     consecutive_compaction_count: int = 0
     stable_append_turns: int = 0
@@ -618,27 +505,6 @@ class BenchmarkScenarioResult(BaseModel):
         default_factory=list
     )
     repository_memory_passed: bool = True
-    producer_succeeded: bool | None = None
-    capture_passed: bool | None = None
-    consolidation_passed: bool | None = None
-    consolidation_protocol_passed: bool | None = None
-    cross_session_isolation_passed: bool | None = None
-    recall_passed: bool | None = None
-    hidden_correctness_passed: bool | None = None
-    snapshot_integrity_passed: bool | None = None
-    unconditional_e2e_success: bool | None = None
-    consumer_correctness_given_producer_succeeded: bool | None = None
-    producer_tool_calls: int = 0
-    producer_memory_entry_count: int = 0
-    expected_producer_memory_entry_count: int = 0
-    producer_avg_context_tokens: float = 0.0
-    producer_elapsed_seconds: float = 0.0
-    producer_workspace_hash: str | None = None
-    producer_memory_snapshot_hash: str | None = None
-    consumer_start_workspace_hash: str | None = None
-    consumer_start_memory_snapshot_hash: str | None = None
-    durable_memory_hash_before: str | None = None
-    durable_memory_hash_after: str | None = None
     elapsed_seconds: float
     memory_aliases: dict[str, str] = Field(default_factory=dict)
     turns: list[BenchmarkScenarioTurnResult] = Field(default_factory=list)
@@ -667,9 +533,9 @@ class BenchmarkVariantSummary(BaseModel):
     avg_context_tokens: float | None
     history_compression_ratio: float
     repeated_read_rate: float
-    memory_topic_read_count: int = 0
-    unique_memory_topics: int = 0
-    repeated_memory_topic_reads: int = 0
+    memory_read_count: int = 0
+    unique_memory_resources: int = 0
+    repeated_memory_reads: int = 0
     compaction_count: int = 0
     consecutive_compaction_count: int = 0
     stable_append_turns: int = 0
@@ -711,8 +577,6 @@ class BenchmarkVariantSummary(BaseModel):
     positive_transfer_count: int = 0
     negative_transfer_count: int = 0
     negative_transfer_rate: float = 0.0
-    unconditional_e2e_success_rate: float | None = None
-    consumer_correctness_given_producer_succeeded: float | None = None
 
 
 class BenchmarkScenarioSummary(BaseModel):
@@ -757,19 +621,12 @@ def _normalize_yaml_modes(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
     if normalized.get("memory_mode") is False:
         normalized["memory_mode"] = "off"
+    elif normalized.get("memory_mode") is True:
+        normalized["memory_mode"] = "on"
     modes = normalized.get("ablation_modes")
     if isinstance(modes, list):
         normalized["ablation_modes"] = [
-            "off" if mode is False else mode
+            "off" if mode is False else ("on" if mode is True else mode)
             for mode in modes
         ]
-    lifecycle = normalized.get("lifecycle")
-    if isinstance(lifecycle, dict):
-        normalized_lifecycle = dict(lifecycle)
-        consumer_modes = normalized_lifecycle.get("consumer_ablation_modes")
-        if isinstance(consumer_modes, list):
-            normalized_lifecycle["consumer_ablation_modes"] = [
-                "off" if mode is False else mode for mode in consumer_modes
-            ]
-        normalized["lifecycle"] = normalized_lifecycle
     return normalized

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Thread
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -15,8 +16,12 @@ from minicode_harness.context import (
 )
 from minicode_harness.context.token import estimate_tokens
 from minicode_harness.loop import AgentLoop, AgentLoopConfig
-from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
+from minicode_harness.memory.consolidation import Phase2Consolidator
+from minicode_harness.memory.extraction import run_pending_phase1
+from minicode_harness.memory.migration import migrate_v2_topics
 from minicode_harness.memory.repository_id import RepositoryIdentityUnavailable
+from minicode_harness.memory.snapshot import MemorySnapshotStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, RunSession
 from minicode_harness.models import ModelClient, create_model_client
 from minicode_harness.output import OutputSink, emit_semantic_compaction_event
@@ -32,7 +37,6 @@ from minicode_harness.runtime.collaboration import (
     DEFAULT_COLLABORATION_MODE,
 )
 from minicode_harness.runtime.cancellation import CancellationToken
-from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
 from minicode_harness.runtime.steering import SteeringQueue
 from minicode_harness.state import (
     ApprovalClient,
@@ -91,11 +95,6 @@ class RunExecutionResult(BaseModel):
     modified_files: list[str] = Field(default_factory=list)
     inspected_files: int = 0
     verification_status: str | None = None
-    memory_review_status: str | None = None
-    memory_reviewed_turns: int = 0
-    memory_candidate_count: int = 0
-    memory_auto_published_count: int = 0
-    memory_pending_candidates: int = 0
     dry_run: bool = False
 
 
@@ -123,6 +122,83 @@ def _emit_optional(output_sink: OutputSink, name: str, *args, **kwargs) -> None:
     handler = getattr(output_sink, name, None)
     if callable(handler):
         handler(*args, **kwargs)
+
+
+def _start_memory_pipeline(
+    *,
+    workspace: Path,
+    data_dir: Path,
+    run_store: RunStore,
+    current_run_id: str,
+    provider: str,
+    model: str | None,
+    trace_writer: TraceWriter,
+) -> None:
+    Thread(
+        target=_run_memory_pipeline_background,
+        kwargs={
+            "workspace": workspace,
+            "data_dir": data_dir,
+            "run_store": run_store,
+            "current_run_id": current_run_id,
+            "provider": provider,
+            "model": model,
+            "trace_writer": trace_writer,
+        },
+        name=f"minicode-memory-{current_run_id}",
+        daemon=True,
+    ).start()
+
+
+def _run_memory_pipeline_background(
+    *,
+    workspace: Path,
+    data_dir: Path,
+    run_store: RunStore,
+    current_run_id: str,
+    provider: str,
+    model: str | None,
+    trace_writer: TraceWriter,
+) -> None:
+    try:
+        store = RepositoryMemoryStore(workspace, data_dir=data_dir)
+        lock = store.try_pipeline_lock()
+        if lock is None:
+            trace_writer.write_event(
+                "memory_pipeline_skipped",
+                reason="lock_busy",
+                repository_id=store.repository_id,
+            )
+            return
+        with lock:
+            memory_client = create_model_client(provider=provider, model=model)
+            migration = migrate_v2_topics(store, memory_client)
+            if migration.status == "completed":
+                trace_writer.write_event(
+                    "memory_v2_migration_completed",
+                    migrated_entries=migration.migrated_entries,
+                )
+            run_pending_phase1(
+                store=store,
+                run_store=run_store,
+                model_client=memory_client,
+                current_run_id=current_run_id,
+                trace_writer=trace_writer,
+            )
+            phase2 = Phase2Consolidator(store, memory_client).consolidate()
+            trace_writer.write_event(
+                "memory_phase2_finished",
+                status=phase2.status,
+                reason=phase2.reason,
+                mode=phase2.mode,
+                input_records=phase2.input_records,
+            )
+    except Exception as exc:
+        trace_writer.write_event(
+            "memory_pipeline_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
 
 
 def build_agent_loop_from_session(
@@ -512,26 +588,20 @@ class RunExecutor:
             workspace_writable=request.permission_mode != PermissionMode.READ_ONLY,
         )
         repository_memory = None
-        request_orchestrator = None
         memory_source = None
         memory_snapshot = None
         if request.repository_memory_enabled:
             try:
                 repository_memory = RepositoryMemoryStore(workspace)
-                request_orchestrator = RequestOrchestrator(
-                    repository_memory=repository_memory,
-                    trace_writer=trace_writer,
-                    review_model_client=model_client,
-                )
-                memory_source = request_orchestrator.recall_snapshot()
+                memory_source = repository_memory.capture_snapshot_source()
                 memory_snapshot = MemorySnapshotStore(run_path).save(
                     repository_id=repository_memory.repository_id,
-                    rendered_index=memory_source.rendered_index,
-                    topic_payloads=memory_source.topic_payloads,
+                    memory_summary=memory_source.memory_summary,
+                    memory_md=memory_source.memory_md,
+                    rollout_summary_files=memory_source.rollout_summary_files,
                 )
             except RepositoryIdentityUnavailable as exc:
                 repository_memory = None
-                request_orchestrator = None
                 memory_source = None
                 memory_snapshot = None
                 trace_writer.write_event(
@@ -541,7 +611,7 @@ class RunExecutor:
                     error=str(exc),
                 )
         long_term_context = (
-            memory_source.rendered_index if memory_source is not None else ""
+            memory_source.memory_summary if memory_source is not None else ""
         )
         if memory_snapshot is not None:
             trace_writer.write_event(
@@ -549,6 +619,15 @@ class RunExecutor:
                 repository_id=memory_snapshot.repository_id,
                 index_hash=memory_snapshot.index_hash,
                 path=MemorySnapshotStore(run_path).checkpoint_path,
+            )
+            _start_memory_pipeline(
+                workspace=workspace,
+                data_dir=repository_memory.data_dir,
+                run_store=self.run_store,
+                current_run_id=session.run_id,
+                provider=request.provider,
+                model=request.model,
+                trace_writer=trace_writer,
             )
 
         loop = build_agent_loop_from_session(
@@ -605,21 +684,6 @@ class RunExecutor:
                 history_length=len(self.session_memory.load_message_history()),
             )
 
-        memory_finalization = None
-        if (
-            agent_result.status == "completed"
-            and final_text
-            and request_orchestrator is not None
-        ):
-            memory_finalization = request_orchestrator.finalize_completed_run(
-                run_id=session.run_id,
-                user_input=request.task,
-                assistant_text=final_text,
-                observations=list(loop.observations),
-                modified_files=list(loop.modified_files),
-                verification=loop.run_state.verification,
-            )
-
         _emit_optional(
             output_sink,
             "run_finished",
@@ -640,29 +704,4 @@ class RunExecutor:
             modified_files=list(loop.modified_files),
             inspected_files=len(loop.run_state.inspected_files),
             verification_status=loop.run_state.verification.status,
-            memory_review_status=(
-                memory_finalization.review_status
-                if memory_finalization is not None
-                else None
-            ),
-            memory_reviewed_turns=(
-                memory_finalization.reviewed_turns
-                if memory_finalization is not None
-                else 0
-            ),
-            memory_candidate_count=(
-                memory_finalization.candidate_count
-                if memory_finalization is not None
-                else 0
-            ),
-            memory_auto_published_count=(
-                memory_finalization.auto_published_count
-                if memory_finalization is not None
-                else 0
-            ),
-            memory_pending_candidates=(
-                memory_finalization.pending_candidates
-                if memory_finalization is not None
-                else 0
-            ),
         )

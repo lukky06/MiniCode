@@ -22,13 +22,9 @@ from .history import (
     format_run_detail,
     format_run_history,
 )
-from .memory import (
-    MemoryManualReviewError,
-    RepositoryMemoryCandidateService,
-    RepositoryMemoryPublisher,
-    RepositoryMemoryStore,
-    TOPIC_NAMES,
-)
+from .memory.consolidation import Phase2Consolidator
+from .memory.migration import migrate_v2_topics
+from .memory.store import RepositoryMemoryStore
 from .models import ModelClientConfigurationError, create_model_client
 from .output import TextOutputSink
 from .policy import (
@@ -40,7 +36,6 @@ from .policy import (
 from .report import format_run_trace, generate_run_report
 from .resume import latest_recoverable_run_id, resume_run
 from .runtime import CollaborationMode, DEFAULT_COLLABORATION_MODE
-from .runtime.request_orchestrator import RequestOrchestrator
 from .runtime.run_executor import RunExecutionRequest, RunExecutor
 from .state import (
     NonInteractiveApprovalClient,
@@ -594,17 +589,7 @@ def _show_runs(
 def memory(
     action: Optional[str] = typer.Argument(
         None,
-        help=(
-            "Repository Memory action: list, remember, review, candidates, approve, reject, "
-            "show, or forget."
-        ),
-    ),
-    value: Optional[str] = typer.Argument(
-        None,
-        help=(
-            "Text for remember, candidate ID for approve/reject, or Topic/entry ID "
-            "for show and forget."
-        ),
+        help="Repository Memory action: status, show, or consolidate.",
     ),
     workspace: Path = typer.Option(
         Path("."),
@@ -612,202 +597,89 @@ def memory(
         "-w",
         help="Workspace whose repository memory should be managed.",
     ),
-    topic: str = typer.Option(
-        "instructions",
-        "--topic",
-        help="Repository Memory Topic used by remember.",
-    ),
     provider: Optional[str] = typer.Option(
         None,
         "--provider",
-        help="Provider used by memory review.",
+        help="Provider used by explicit consolidation.",
     ),
     model: Optional[str] = typer.Option(
         None,
         "--model",
-        help="Model used by memory review.",
+        help="Model used by explicit consolidation.",
     ),
 ) -> None:
-    """Manage repository Memory."""
+    """Inspect or explicitly consolidate Repository Memory V3."""
 
     resolved_workspace = workspace.resolve()
-    normalized_action = (action or "list").strip().lower()
+    normalized_action = (action or "status").strip().lower()
     repository = RepositoryMemoryStore(resolved_workspace)
     try:
-        if normalized_action == "list":
-            typer.echo("Repository Memory")
-            typer.echo(
-                repository.index_store.ensure().content
-                or "No durable memory Topics are registered."
+        if normalized_action == "status":
+            state = repository.load_state()
+            dirty = state.latest_stage1_seq > state.last_phase2_input_seq
+            typer.echo("Repository Memory V3")
+            typer.echo(f"repository_id={repository.repository_id}")
+            typer.echo(f"path={repository.memory_dir}")
+            typer.echo(f"schema_version={state.schema_version}")
+            typer.echo(f"latest_stage1_seq={state.latest_stage1_seq}")
+            typer.echo(f"last_phase2_input_seq={state.last_phase2_input_seq}")
+            typer.echo(f"last_phase2_success_at={state.last_phase2_success_at or '-'}")
+            typer.echo(f"dirty={'true' if dirty else 'false'}")
+            return
+
+        if normalized_action == "show":
+            summary = repository.read_memory_summary()
+            handbook = repository.read_memory()
+            typer.echo("memory_summary.md")
+            typer.echo(summary or "(empty)")
+            typer.echo("")
+            typer.echo("MEMORY.md")
+            typer.echo(handbook or "(empty)")
+            return
+
+        if normalized_action != "consolidate":
+            raise ValueError(
+                "Repository Memory action must be status, show, or consolidate."
             )
-            typer.echo(
-                "Pending reviews: "
-                f"{len(repository.workflow_store.pending_reviews())}; "
-                "pending candidates: "
-                f"{len(repository.workflow_store.list_candidates(status='pending'))}."
+
+        lock = repository.try_pipeline_lock()
+        if lock is None:
+            typer.echo("Memory pipeline busy.")
+            return
+        with lock:
+            state = repository.load_state()
+            dirty = state.latest_stage1_seq > state.last_phase2_input_seq
+            legacy_topics = repository.memory_dir / "topics"
+            has_legacy_topics = (
+                not repository.summary_path.is_file()
+                and legacy_topics.is_dir()
+                and any(legacy_topics.glob("*.md"))
             )
-            for candidate_topic in repository.topic_store.registered_topics():
-                warning = repository.topic_store.capacity_status(candidate_topic).warning
-                if warning:
-                    typer.echo(f"Warning: {warning}")
-        elif normalized_action == "remember":
-            if not value or not value.strip():
-                raise ValueError("memory remember requires text.")
-            if topic not in TOPIC_NAMES:
-                raise ValueError(f"Unknown memory Topic: {topic}")
-            result = RepositoryMemoryPublisher(repository).publish(
-                topic=topic,
-                text=value,
-                evidence_ids=["cli"],
-            )
-            typer.echo(
-                f"Memory {result.status}: topic={result.topic}; "
-                f"entry={result.entry_id}; index={result.index_status}."
-            )
-            if result.capacity_warning:
-                typer.echo(f"Warning: {result.capacity_warning}")
-        elif normalized_action == "review":
+            if not dirty and not has_legacy_topics:
+                typer.echo("Memory consolidate NOOP: clean.")
+                return
+
             client = create_model_client(
                 provider=_resolve_provider(provider),
                 model=_resolve_model(model),
             )
-            status, reviewed, created, auto_published = RequestOrchestrator(
-                repository_memory=repository,
-                review_model_client=client,
-            ).review_pending(force=True)
-            typer.echo(
-                f"Memory review {status or 'no_reviews'}; reviewed={reviewed}; "
-                f"created={created}; auto_published={auto_published}; "
-                f"pending_reviews={len(repository.workflow_store.pending_reviews())}; "
-                "pending_candidates="
-                f"{len(repository.workflow_store.list_candidates(status='pending'))}."
-            )
-        elif normalized_action == "candidates":
-            candidates = repository.workflow_store.list_candidates()
-            if not candidates:
-                typer.echo("No memory candidates.")
-            for candidate in candidates:
-                sources = ",".join(str(seq) for seq in candidate.source_review_seqs)
+            migration = migrate_v2_topics(repository, client)
+            if migration.status == "completed":
                 typer.echo(
-                    f"[{candidate.status}] {candidate.candidate_id} "
-                    f"{candidate.topic}: {candidate.text}"
+                    "Memory consolidate completed: "
+                    f"migrated_entries={migration.migrated_entries}."
                 )
-                typer.echo(f"  reason: {candidate.reason}")
-                typer.echo(f"  auto publish proposed: {candidate.auto_publish}")
-                typer.echo(f"  source reviews: {sources}")
-                for quote in candidate.source_quotes:
-                    typer.echo(f"  source quote: {quote}")
-                if candidate.reviewed_entry_ids:
-                    typer.echo(
-                        "  reviewed entries: "
-                        + ", ".join(candidate.reviewed_entry_ids)
-                    )
-                if candidate.conflicts_with_entry_ids:
-                    typer.echo(
-                        "  conflicts with: "
-                        + ", ".join(candidate.conflicts_with_entry_ids)
-                    )
-                for evidence in candidate.evidence:
-                    verification = evidence.verification
-                    verification_status = (
-                        verification.status if verification is not None else "unknown"
-                    )
-                    typer.echo(
-                        f"  evidence: review={evidence.review_seq}; "
-                        f"run={evidence.source_run_id}; "
-                        f"verification={verification_status}"
-                    )
-                    if verification is not None and verification.command:
-                        typer.echo(
-                            f"    verification command: {verification.command}; "
-                            f"returncode={verification.returncode}"
-                        )
-                    failure = evidence.resolved_failure
-                    if failure is not None:
-                        typer.echo(
-                            f"    failure: {failure.failed_command} -> "
-                            f"{failure.passed_command}"
-                        )
-                        typer.echo(
-                            "    modified files: "
-                            + (", ".join(failure.modified_files) or "none")
-                        )
-        elif normalized_action == "approve":
-            if not value:
-                raise ValueError("memory approve requires a candidate ID.")
-            result = RepositoryMemoryCandidateService(repository).approve(value)
+                return
+
+            result = Phase2Consolidator(repository, client).consolidate(
+                explicit=True,
+            )
             typer.echo(
-                f"Memory candidate {result.status}: {result.candidate_id}; "
-                f"status={result.candidate_status}; entry={result.entry_id}."
+                f"Memory consolidate {result.status}: "
+                f"reason={result.reason}; mode={result.mode or '-'}; "
+                f"input_records={result.input_records}."
             )
-            if result.capacity_warning:
-                typer.echo(f"Warning: {result.capacity_warning}")
-        elif normalized_action == "reject":
-            if not value:
-                raise ValueError("memory reject requires a candidate ID.")
-            result = RepositoryMemoryCandidateService(repository).reject(value)
-            typer.echo(
-                f"Memory candidate {result.status}: {result.candidate_id}; "
-                f"status={result.candidate_status}."
-            )
-        elif normalized_action == "show":
-            if not value:
-                raise ValueError("memory show requires a Topic or entry ID.")
-            if value in TOPIC_NAMES:
-                document = repository.topic_store.read(value)
-                typer.echo(repository.topic_store.path_for(value).read_text(encoding="utf-8") if document.entries else f"Topic {value} has no entries.")
-            else:
-                found = None
-                found_topic = None
-                for candidate_topic in TOPIC_NAMES:
-                    entry = repository.topic_store.get_entry(candidate_topic, value)
-                    if entry is not None:
-                        found = entry
-                        found_topic = candidate_topic
-                        break
-                if found is None:
-                    raise KeyError(f"Memory entry not found: {value}")
-                typer.echo(f"Topic: {found_topic}")
-                typer.echo(found.model_dump_json(indent=2))
-        elif normalized_action == "forget":
-            if not value:
-                raise ValueError("memory forget requires an entry ID.")
-            found = None
-            found_topic = None
-            for candidate_topic in TOPIC_NAMES:
-                entry = repository.topic_store.get_entry(candidate_topic, value)
-                if entry is not None:
-                    found = entry
-                    found_topic = candidate_topic
-                    break
-            if found is None or found_topic is None:
-                raise KeyError(f"Memory entry not found: {value}")
-            repository.topic_store.deactivate_entry(
-                topic=found_topic,
-                entry_id=value,
-            )
-            repository.refresh_index()
-            repository.event_store.append(
-                "memory_action_applied",
-                operation_id=f"explicit_forget:{value}",
-                action="DEACTIVATE",
-                topic=found_topic,
-                source_note_seqs=[],
-                entry_ids=[value],
-            )
-            typer.echo(f"Forgot memory entry {value}.")
-        else:
-            raise ValueError(
-                "Repository Memory action must be list, remember, review, candidates, approve, "
-                "reject, show, or forget."
-            )
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        MemoryManualReviewError,
-        ModelClientConfigurationError,
-    ) as exc:
+    except (OSError, ValueError, ModelClientConfigurationError) as exc:
         typer.echo(f"Memory failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -892,7 +764,7 @@ def bench_scenario(
     memory_mode: Optional[str] = typer.Option(
         None,
         "--memory-mode",
-        help="Override scenario memory mode: off, index_only, or index_topic.",
+        help="Override scenario memory mode: off or on.",
     ),
     context_compaction_mode: Optional[str] = typer.Option(
         None,
@@ -928,7 +800,7 @@ def bench_scenario(
     try:
         resolved_memory_mode = _benchmark_mode(
             memory_mode,
-            allowed={"off", "index_only", "index_topic"},
+            allowed={"off", "on"},
             label="memory mode",
         )
         resolved_context_compaction_mode = _benchmark_mode(

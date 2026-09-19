@@ -43,7 +43,9 @@ from minicode_harness.context import (
 from minicode_harness.context.token import estimate_tokens
 from minicode_harness.hooks import HookDecision, HookEvent, HookManager
 from minicode_harness.mcp import MCPManager
-from minicode_harness.memory import MemorySnapshotStore, RepositoryMemoryStore
+from minicode_harness.memory.recall import MemorySnapshotReader
+from minicode_harness.memory.snapshot import MemorySnapshotStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import (
     ReplSessionMemory,
     UserInputClient,
@@ -279,7 +281,7 @@ class AgentLoop:
             and self.config.repository_memory_enabled
             and self.repository_memory is not None
         ):
-            self.long_term_context = self.repository_memory.render_index()
+            self.long_term_context = self.repository_memory.read_memory_summary()
         else:
             self.long_term_context = ""
 
@@ -325,8 +327,11 @@ class AgentLoop:
             mcp_config=mcp_config,
             command_executor=command_executor,
             subagent_handler=self._run_subagent,
-            memory_topic_reader=(
-                self._read_memory_topic if self.repository_memory is not None else None
+            memory_reader=(
+                self._read_memory_resource if self.repository_memory is not None else None
+            ),
+            memory_searcher=(
+                self._search_memory if self.repository_memory is not None else None
             ),
             initial_task_state=initial_task_state,
             initial_observations=self.observations,
@@ -923,7 +928,13 @@ class AgentLoop:
             "selected_label": selected.label,
         }
 
-    def _read_memory_topic(self, topic: str) -> dict[str, str]:
+    def _read_memory_resource(
+        self,
+        target: str,
+        *,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> dict[str, Any]:
         if self.repository_memory is None:
             raise RuntimeError("Repository Memory is not configured.")
         snapshot = self.memory_snapshot_store.load(
@@ -931,19 +942,47 @@ class AgentLoop:
         )
         if snapshot is None:
             raise RuntimeError("Repository Memory Run snapshot is missing.")
-        if topic not in snapshot.topic_hashes:
-            raise FileNotFoundError(
-                f"Memory Topic is not registered in the Run snapshot: {topic}"
-            )
-        payload = self.memory_snapshot_store.read_topic(topic)
-        status = "run_start_snapshot"
-        self.trace_writer.write_event(
-            "memory_topic_snapshot_used",
-            topic=topic,
-            status=status,
-            content_hash=payload.get("content_hash", ""),
+        result = MemorySnapshotReader(self.memory_snapshot_store).read(
+            target,
+            start_line=start_line,
+            end_line=end_line,
         )
-        return payload
+        self.trace_writer.write_event(
+            "memory_snapshot_read",
+            target=result["path"],
+            start_line=result["start_line"],
+            end_line=result["end_line"],
+        )
+        return result
+
+    def _search_memory(
+        self,
+        query: str,
+        *,
+        limit: int = 50,
+        use_regex: bool = False,
+        case_sensitive: bool = False,
+    ) -> dict[str, Any]:
+        if self.repository_memory is None:
+            raise RuntimeError("Repository Memory is not configured.")
+        snapshot = self.memory_snapshot_store.load(
+            expected_hash=self.memory_snapshot_hash,
+        )
+        if snapshot is None:
+            raise RuntimeError("Repository Memory Run snapshot is missing.")
+        result = MemorySnapshotReader(self.memory_snapshot_store).search(
+            query,
+            limit=limit,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
+        )
+        self.trace_writer.write_event(
+            "memory_snapshot_searched",
+            query=query,
+            match_count=len(result["matches"]),
+            truncated=result["truncated"],
+        )
+        return result
 
     def _repository_rules_snapshot(self) -> RepositoryRulesSnapshot:
         if self.repository_rule_loader is None:

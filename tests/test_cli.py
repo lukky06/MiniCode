@@ -16,7 +16,7 @@ from minicode_harness.cli import (
     app,
 )
 from minicode_harness.state import ReplSessionStore
-from minicode_harness.memory import RepositoryMemoryStore
+from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.terminal import SessionLaunchMode
 
 
@@ -582,13 +582,10 @@ def test_history_and_memory_commands_read_local_state(tmp_path, monkeypatch) -> 
     session_id = conversation.session_id
 
     repository = RepositoryMemoryStore(workspace, data_dir=data_dir)
-    entry = repository.topic_store.add_entry(
-        topic="build-and-test",
-        entry_type="procedure",
-        summary="Known: prefer focused verification.",
-        evidence_ids=["test"],
+    repository.write_durable_memory(
+        "# Repository Memory\n\nKnown: prefer focused verification.\n",
+        "v1\n- Focused verification guidance is documented in MEMORY.md.\n",
     )
-    repository.refresh_index()
 
     runs_result = runner.invoke(
         app, ["runs", "--workspace", str(workspace)]
@@ -597,7 +594,10 @@ def test_history_and_memory_commands_read_local_state(tmp_path, monkeypatch) -> 
     sessions_result = runner.invoke(
         app, ["sessions", "--workspace", str(workspace)]
     )
-    memory_result = runner.invoke(app, ["memory", "--workspace", str(workspace)])
+    memory_result = runner.invoke(app, ["memory", "status", "--workspace", str(workspace)])
+    memory_show_result = runner.invoke(
+        app, ["memory", "show", "--workspace", str(workspace)]
+    )
 
     assert runs_result.exit_code == 0
     assert "Run History" in runs_result.output
@@ -610,30 +610,11 @@ def test_history_and_memory_commands_read_local_state(tmp_path, monkeypatch) -> 
     assert "Sessions" in sessions_result.output
     assert session_id in sessions_result.output
     assert memory_result.exit_code == 0
-    assert "Repository Memory" in memory_result.output
-    assert "build-and-test" in memory_result.output
-
-    remember_result = runner.invoke(
-        app,
-        [
-            "memory",
-            "remember",
-            "Prefer targeted tests.",
-            "--workspace",
-            str(workspace),
-            "--topic",
-            "build-and-test",
-        ],
-    )
-    assert remember_result.exit_code == 0
-    assert "Memory saved" in remember_result.output
-
-    forget_result = runner.invoke(
-        app,
-        ["memory", "forget", entry.entry_id, "--workspace", str(workspace)],
-    )
-    assert forget_result.exit_code == 0
-    assert repository.topic_store.get_entry("build-and-test", entry.entry_id).status == "inactive"
+    assert "Repository Memory V3" in memory_result.output
+    assert "dirty=false" in memory_result.output
+    assert memory_show_result.exit_code == 0
+    assert "Focused verification guidance" in memory_show_result.output
+    assert "Known: prefer focused verification." in memory_show_result.output
 
 
 def test_bench_run_command_invokes_runner(monkeypatch) -> None:
@@ -744,7 +725,7 @@ def test_bench_scenario_command_invokes_shared_session_runner(monkeypatch) -> No
     assert Path(calls["output"]).as_posix() == "runs/memory-context"
 
 
-def test_bench_scenario_accepts_memory_v2_mode_override(monkeypatch) -> None:
+def test_bench_scenario_accepts_memory_v3_mode_override(monkeypatch) -> None:
     calls = {}
 
     class FakeScenarioRunner:
@@ -753,7 +734,7 @@ def test_bench_scenario_accepts_memory_v2_mode_override(monkeypatch) -> None:
 
         def run_suite(self, suite, output):
             return BenchmarkScenarioSummary(
-                suite="memory-v2-eval",
+                suite="memory-v3-eval",
                 total_runs=1,
                 resolved_runs=1,
                 resolve_rate=1.0,
@@ -772,14 +753,14 @@ def test_bench_scenario_accepts_memory_v2_mode_override(monkeypatch) -> None:
         [
             "bench",
             "scenario",
-            "benchmarks/suites/memory-v2-eval",
+            "benchmarks/suites/memory-v3-eval",
             "--memory-mode",
-            "index_topic",
+            "on",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert calls["config"].memory_mode == "index_topic"
+    assert calls["config"].memory_mode == "on"
 
 
 def test_bench_run_uses_minicode_environment_defaults(monkeypatch) -> None:

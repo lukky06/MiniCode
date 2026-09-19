@@ -42,15 +42,6 @@ TaskStatusValue = Literal["pending", "in_progress", "completed", "cancelled"]
 MAX_TASK_TOOL_ITEMS = 12
 
 
-MemoryTopicName = Literal[
-    "instructions",
-    "build-and-test",
-    "debugging",
-    "decisions",
-    "environment",
-]
-
-
 class ReadArgs(BaseModel):
     """Read one explicitly typed resource."""
 
@@ -73,18 +64,10 @@ class ReadArgs(BaseModel):
             return self
         if self.target is None:
             raise ValueError(f"{self.source} reads require target.")
-        if self.source in {"memory", "skill"} and (
+        if self.source == "skill" and (
             self.start_line is not None or self.end_line is not None
         ):
-            raise ValueError(f"{self.source} reads do not accept line ranges.")
-        if self.source == "memory" and self.target not in {
-            "instructions",
-            "build-and-test",
-            "debugging",
-            "decisions",
-            "environment",
-        }:
-            raise ValueError("memory reads require one registered Topic name.")
+            raise ValueError("skill reads do not accept line ranges.")
         if (
             self.start_line is not None
             and self.end_line is not None
@@ -97,7 +80,7 @@ class ReadArgs(BaseModel):
 class SearchArgs(BaseModel):
     """Search workspace or Artifact files and text through one bounded protocol."""
 
-    source: Literal["workspace", "artifact"] = Field(
+    source: Literal["workspace", "artifact", "memory"] = Field(
         "workspace",
         description="Search root type.",
     )
@@ -117,6 +100,8 @@ class SearchArgs(BaseModel):
 
     @model_validator(mode="after")
     def validate_kind_contract(self) -> "SearchArgs":
+        if self.source == "memory" and self.kind != "text":
+            raise ValueError("memory search supports kind=text only.")
         if self.kind == "files" and (
             self.file_glob is not None or self.use_regex or not self.case_sensitive
         ):
@@ -397,7 +382,8 @@ class ToolRegistry:
         skill_names: Iterable[str] | None = None,
         mcp_manager: MCPManager | None = None,
         subagent_handler: Callable[[str], Any] | None = None,
-        memory_topic_reader: Callable[[MemoryTopicName], Any] | None = None,
+        memory_reader: Callable[..., Any] | None = None,
+        memory_searcher: Callable[..., Any] | None = None,
         task_create_handler: Callable[[list[str]], Any] | None = None,
         task_update_handler: Callable[[dict[str, TaskStatusValue]], Any] | None = None,
         task_list_handler: Callable[[], Any] | None = None,
@@ -417,7 +403,8 @@ class ToolRegistry:
         self.skill_loader = skill_loader
         self.mcp_manager = mcp_manager
         self.subagent_handler = subagent_handler
-        self.memory_topic_reader = memory_topic_reader
+        self.memory_reader = memory_reader
+        self.memory_searcher = memory_searcher
         self.task_create_handler = task_create_handler
         self.task_update_handler = task_update_handler
         self.task_list_handler = task_list_handler
@@ -434,10 +421,10 @@ class ToolRegistry:
             "read": ToolDefinition(
                 name="read",
                 description=(
-                    "Read one explicitly typed resource. Workspace and Artifact targets must identify a file; "
-                    "optional line ranges select an inclusive local range. Memory uses exact names. Skill uses "
-                    "<skill> or <skill>/<path>. source=diff returns the current Git diff without a target. "
-                    "For Memory, read at most two exact indexed Topics per user turn."
+                    "Read one explicitly typed resource. Workspace, Artifact, and Memory targets identify "
+                    "one file-like resource; optional line ranges select an inclusive local range. Memory reads "
+                    "the immutable Run-start snapshot, such as MEMORY.md or rollout_summaries/<file>.md. Skill uses "
+                    "<skill> or <skill>/<path>. source=diff returns the current Git diff without a target."
                 ),
                 args_model=ReadArgs,
                 handler=self._execute_read,
@@ -447,9 +434,9 @@ class ToolRegistry:
             "search": ToolDefinition(
                 name="search",
                 description=(
-                    "Search bounded Workspace/Artifact resources. kind=files locates candidate paths by glob; narrow "
-                    "path/glob before widening depth/limit, not whole-repository inventory. kind=text searches matching "
-                    "lines with optional file_glob/regex/case controls. path may be file/dir; '.' is source root. Results "
+                    "Search Workspace/Artifact/Memory. kind=files locates Workspace/Artifact candidate paths by glob; "
+                    "kind=text searches matching lines with regex/case controls. Memory supports text search "
+                    "over immutable Run-start MEMORY.md and rollout summaries. Results "
                     "may truncate by bounds."
                 ),
                 args_model=SearchArgs,
@@ -664,9 +651,13 @@ class ToolRegistry:
                 end_line=args.end_line,
             )
         if args.source == "memory":
-            if self.memory_topic_reader is None:
+            if self.memory_reader is None:
                 return _unavailable_tool("memory_disabled")
-            return self.memory_topic_reader(target)
+            return self.memory_reader(
+                target,
+                start_line=args.start_line,
+                end_line=args.end_line,
+            )
         if args.source == "skill":
             if self.skill_loader is None or not self.skill_names:
                 return _unavailable_tool("skills_disabled")
@@ -674,6 +665,16 @@ class ToolRegistry:
         return inspect_git_diff(self.workspace)
 
     def _execute_search(self, args: SearchArgs) -> Any:
+        if args.source == "memory":
+            if self.memory_searcher is None:
+                return _unavailable_tool("memory_disabled")
+            return self.memory_searcher(
+                args.query,
+                limit=args.limit,
+                use_regex=args.use_regex,
+                case_sensitive=args.case_sensitive,
+            )
+
         search_root = self.workspace
         if args.source == "artifact":
             if self.artifact_dir is None:

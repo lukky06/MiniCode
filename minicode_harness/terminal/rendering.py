@@ -85,10 +85,6 @@ class TerminalRenderer:
             parts.append(f"verification {verification}")
         elif result.stop_reason and result.status != "completed":
             parts.append(result.stop_reason)
-        if result.memory_auto_published_count:
-            parts.append(f"memory +{result.memory_auto_published_count}")
-        if result.memory_review_status and result.memory_pending_candidates:
-            parts.append(f"memory {result.memory_pending_candidates} pending")
         self.console.print(Rule(" · ".join(parts)))
         if result.stop_summary:
             self.console.print(

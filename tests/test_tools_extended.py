@@ -391,7 +391,7 @@ def test_normal_write_registry_exposes_exact_stable_eleven_tool_surface(
         schema for schema in registry.schemas() if schema["function"]["name"] == "search"
     )
     source_schema = search_schema["function"]["parameters"]["properties"]["source"]
-    assert source_schema["enum"] == ["workspace", "artifact"]
+    assert source_schema["enum"] == ["workspace", "artifact", "memory"]
     assert source_schema["default"] == "workspace"
 
 
@@ -427,7 +427,6 @@ def test_registry_compacts_provider_schemas_by_at_least_ten_percent(
         enable_write=True,
         artifact_dir=str(tmp_path / "artifacts"),
         subagent_handler=lambda task: task,
-        memory_topic_reader=lambda topic: {"topic": topic},
     )
     raw_schemas: list[dict[str, Any]] = []
     for tool in registry._tools.values():

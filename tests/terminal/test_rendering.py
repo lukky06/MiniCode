@@ -91,28 +91,3 @@ def test_run_summary_renders_deterministic_budget_stop_summary() -> None:
     assert "max_steps" in output
     assert "model-call budget was exhausted" in output
     assert "Changes retained: src/example.py" in output
-
-
-def test_run_summary_shows_memory_publication_and_pending_review() -> None:
-    stream = StringIO()
-    console = Console(
-        file=stream,
-        force_terminal=False,
-        color_system=None,
-        width=100,
-    )
-    renderer = TerminalRenderer(console)
-    result = RunExecutionResult(
-        run_id="run_memory",
-        run_path=Path("runs/run_memory"),
-        status="completed",
-        memory_review_status="completed",
-        memory_auto_published_count=2,
-        memory_pending_candidates=1,
-    )
-
-    renderer.show_run_summary(result)
-
-    output = stream.getvalue()
-    assert "memory +2" in output
-    assert "memory 1 pending" in output

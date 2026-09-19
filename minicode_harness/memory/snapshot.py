@@ -1,4 +1,4 @@
-"""Immutable per-Run Repository Memory snapshots used by normal execution and Resume."""
+"""Immutable per-Run Memory V3 snapshot."""
 
 from __future__ import annotations
 
@@ -10,73 +10,71 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .types import TOPIC_NAMES, MemoryTopicName, utc_now
+from .types import utc_now
 
-MEMORY_SNAPSHOT_MARKDOWN = "memory-snapshot.md"
+
 MEMORY_SNAPSHOT_METADATA = "memory-snapshot.json"
-MEMORY_TOPIC_SNAPSHOT_DIR = "memory-topic-snapshots"
+MEMORY_SNAPSHOT_DIR = "memory-snapshot"
+MEMORY_SNAPSHOT_SUMMARY = "memory_summary.md"
+MEMORY_SNAPSHOT_HANDBOOK = "MEMORY.md"
+MEMORY_SNAPSHOT_ROLLOUTS = "rollout_summaries"
 
 
 class MemorySnapshot(BaseModel):
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     repository_id: str
     index_hash: str
-    rendered_index: str = ""
-    topic_hashes: dict[str, str] = Field(default_factory=dict)
-    created_at: str = Field(default_factory=utc_now)
-
-
-class MemoryTopicSnapshot(BaseModel):
-    topic: MemoryTopicName
-    content_hash: str
-    payload: dict[str, str]
+    memory_summary_hash: str
+    memory_hash: str
+    rollout_summary_hashes: dict[str, str] = Field(default_factory=dict)
+    rollout_summary_files: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
 
 
 class MemorySnapshotStore:
+    """Persist the immutable Memory view visible to one Run."""
+
     def __init__(self, run_path: Path | str) -> None:
         self.run_path = Path(run_path)
-        self.markdown_path = self.run_path / MEMORY_SNAPSHOT_MARKDOWN
         self.metadata_path = self.run_path / MEMORY_SNAPSHOT_METADATA
-        self.topic_dir = self.run_path / MEMORY_TOPIC_SNAPSHOT_DIR
+        self.snapshot_dir = self.run_path / MEMORY_SNAPSHOT_DIR
+        self.summary_path = self.snapshot_dir / MEMORY_SNAPSHOT_SUMMARY
+        self.memory_path = self.snapshot_dir / MEMORY_SNAPSHOT_HANDBOOK
+        self.rollout_dir = self.snapshot_dir / MEMORY_SNAPSHOT_ROLLOUTS
 
     def save(
         self,
         *,
         repository_id: str,
-        rendered_index: str,
-        topic_payloads: dict[MemoryTopicName | str, dict[str, str]] | None = None,
+        memory_summary: str,
+        memory_md: str,
+        rollout_summary_files: dict[str, str] | None = None,
     ) -> MemorySnapshot:
-        topic_snapshots: dict[MemoryTopicName, MemoryTopicSnapshot] = {}
-        for topic, payload in sorted((topic_payloads or {}).items()):
-            normalized = _normalize_topic(topic)
-            if payload.get("topic") != normalized:
-                raise ValueError(
-                    f"Memory Topic payload name does not match snapshot key: {normalized}."
-                )
-            topic_snapshots[normalized] = MemoryTopicSnapshot(
-                topic=normalized,
-                content_hash=_payload_hash(payload),
-                payload=dict(payload),
-            )
-
+        rollouts = dict(sorted((rollout_summary_files or {}).items()))
+        _validate_rollout_names(rollouts)
+        hashes = {
+            name: _content_hash(content)
+            for name, content in rollouts.items()
+        }
         snapshot = MemorySnapshot(
-            version=2,
             repository_id=repository_id,
-            index_hash=_content_hash(rendered_index),
-            rendered_index=rendered_index,
-            topic_hashes={
-                topic: item.content_hash for topic, item in topic_snapshots.items()
-            },
+            index_hash=_snapshot_hash(memory_summary, memory_md, hashes),
+            memory_summary_hash=_content_hash(memory_summary),
+            memory_hash=_content_hash(memory_md),
+            rollout_summary_hashes=hashes,
+            rollout_summary_files=list(rollouts),
         )
+
         self.run_path.mkdir(parents=True, exist_ok=True)
-        if self.topic_dir.exists():
-            shutil.rmtree(self.topic_dir)
-        if topic_snapshots:
-            self.topic_dir.mkdir(parents=True, exist_ok=True)
-            for item in topic_snapshots.values():
-                self._write_topic_snapshot(item)
-        _atomic_write_text(self.markdown_path, rendered_index)
+        if self.snapshot_dir.exists():
+            shutil.rmtree(self.snapshot_dir)
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(self.summary_path, memory_summary)
+        _atomic_write_text(self.memory_path, memory_md)
+        if rollouts:
+            self.rollout_dir.mkdir(parents=True, exist_ok=True)
+            for name, content in rollouts.items():
+                _atomic_write_text(self.rollout_dir / name, content)
         _atomic_write_text(
             self.metadata_path,
             json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2)
@@ -90,76 +88,80 @@ class MemorySnapshotStore:
         snapshot = MemorySnapshot.model_validate_json(
             self.metadata_path.read_text(encoding="utf-8")
         )
-        actual_hash = _content_hash(snapshot.rendered_index)
-        if actual_hash != snapshot.index_hash:
-            raise ValueError("Memory snapshot metadata hash does not match rendered_index.")
+        summary = self.read_summary()
+        memory_md = self.read_memory()
+        if _content_hash(summary) != snapshot.memory_summary_hash:
+            raise ValueError("Memory snapshot summary hash mismatch.")
+        if _content_hash(memory_md) != snapshot.memory_hash:
+            raise ValueError("Memory snapshot handbook hash mismatch.")
+
+        actual_rollouts = (
+            {
+                path.name: _content_hash(path.read_text(encoding="utf-8"))
+                for path in sorted(self.rollout_dir.glob("*.md"))
+                if path.is_file()
+            }
+            if self.rollout_dir.is_dir()
+            else {}
+        )
+        if actual_rollouts != snapshot.rollout_summary_hashes:
+            raise ValueError("Memory snapshot rollout summaries do not match metadata.")
+        if list(actual_rollouts) != snapshot.rollout_summary_files:
+            raise ValueError("Memory snapshot rollout summary order does not match metadata.")
+
+        actual_snapshot_hash = _snapshot_hash(
+            summary,
+            memory_md,
+            actual_rollouts,
+        )
+        if actual_snapshot_hash != snapshot.index_hash:
+            raise ValueError("Memory snapshot hash mismatch.")
         if expected_hash is not None and expected_hash != snapshot.index_hash:
             raise ValueError("Memory snapshot hash does not match the checkpoint.")
-        if self.markdown_path.is_file():
-            markdown = self.markdown_path.read_text(encoding="utf-8")
-            if _content_hash(markdown) != snapshot.index_hash:
-                raise ValueError("Memory snapshot Markdown does not match the metadata hash.")
-        expected_topics = set(snapshot.topic_hashes)
-        actual_topics = (
-            {path.stem for path in self.topic_dir.glob("*.json")}
-            if self.topic_dir.is_dir()
-            else set()
-        )
-        if actual_topics != expected_topics:
-            raise ValueError(
-                "Memory Topic snapshot files do not match snapshot metadata."
+        return snapshot
+
+    def read_summary(self) -> str:
+        if not self.summary_path.is_file():
+            return ""
+        return self.summary_path.read_text(encoding="utf-8")
+
+    def read_memory(self) -> str:
+        if not self.memory_path.is_file():
+            return ""
+        return self.memory_path.read_text(encoding="utf-8")
+
+    def read_rollout_summary(self, filename: str) -> str:
+        snapshot = self.load()
+        if snapshot is None or filename not in snapshot.rollout_summary_files:
+            raise FileNotFoundError(
+                f"Rollout summary is not present in the Run snapshot: {filename}"
             )
-        for topic, expected_topic_hash in snapshot.topic_hashes.items():
-            topic_snapshot = self._load_topic_snapshot(_normalize_topic(topic))
-            if topic_snapshot.content_hash != expected_topic_hash:
-                raise ValueError(
-                    f"Memory Topic snapshot hash does not match metadata: {topic}."
-                )
-        return snapshot
-
-    def read_topic(self, topic: MemoryTopicName | str) -> dict[str, str]:
-        return dict(self._load_topic_snapshot(_normalize_topic(topic)).payload)
-
-    def _load_topic_snapshot(self, topic: MemoryTopicName) -> MemoryTopicSnapshot:
-        path = self.topic_dir / f"{topic}.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"Memory Topic is not present in the Run snapshot: {topic}")
-        snapshot = MemoryTopicSnapshot.model_validate_json(
-            path.read_text(encoding="utf-8")
-        )
-        if snapshot.topic != topic:
-            raise ValueError("Memory Topic snapshot name does not match its file.")
-        if _payload_hash(snapshot.payload) != snapshot.content_hash:
-            raise ValueError("Memory Topic snapshot payload hash does not match metadata.")
-        return snapshot
-
-    def _write_topic_snapshot(self, snapshot: MemoryTopicSnapshot) -> None:
-        path = self.topic_dir / f"{snapshot.topic}.json"
-        _atomic_write_text(
-            path,
-            json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2)
-            + "\n",
-        )
+        path = self.rollout_dir / filename
+        return path.read_text(encoding="utf-8")
 
     @property
     def checkpoint_path(self) -> str:
         return MEMORY_SNAPSHOT_METADATA
 
 
-def _normalize_topic(topic: MemoryTopicName | str) -> MemoryTopicName:
-    normalized = str(topic).strip()
-    if normalized not in TOPIC_NAMES:
-        raise ValueError(f"Unknown memory topic: {topic}")
-    return normalized  # type: ignore[return-value]
+def _validate_rollout_names(rollouts: dict[str, str]) -> None:
+    for name in rollouts:
+        path = Path(name)
+        if path.name != name or path.suffix != ".md":
+            raise ValueError(f"Invalid rollout summary filename: {name}")
 
 
-def _content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def _payload_hash(payload: dict[str, str]) -> str:
+def _snapshot_hash(
+    memory_summary: str,
+    memory_md: str,
+    rollout_hashes: dict[str, str],
+) -> str:
     rendered = json.dumps(
-        payload,
+        {
+            "memory_summary_hash": _content_hash(memory_summary),
+            "memory_hash": _content_hash(memory_md),
+            "rollout_summary_hashes": rollout_hashes,
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -167,7 +169,12 @@ def _payload_hash(payload: dict[str, str]) -> str:
     return _content_hash(rendered)
 
 
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(content, encoding="utf-8")
-    temp.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)

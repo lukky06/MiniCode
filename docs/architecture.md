@@ -83,7 +83,39 @@ Assistant Final Answer
 
 在普通压缩不足时，运行时还可以执行受约束的语义摘要和上下文溢出恢复。
 
-## 5. Tool Runtime
+## 5. Repository Memory V3
+
+Repository Memory 保存跨 Run 仍有价值的仓库知识。每个新的 top-level Run 先冻结 `memory_summary.md`、`MEMORY.md` 和当时可见的 immutable rollout summaries，当前 Run 后续始终读取这份 Snapshot。
+
+模型默认只接收小型 `memory_summary.md`。需要详细信息时继续复用统一工具：
+
+```text
+search(source="memory", query="windows git")
+read(source="memory", target="MEMORY.md")
+read(source="memory", target="rollout_summaries/<run>--<slug>.md")
+```
+
+Snapshot 完成后，Runtime 会异步启动 repository 级 Memory Pipeline。`pipeline.lock` 使用跨进程非阻塞互斥，保证同一仓库同一时间只有一个 Pipeline 工作；抢锁失败直接跳过，不阻塞 Coding Run。另一个短临界区 `durable.lock` 只保护 durable Summary/Handbook/rollout summaries 的提交与 Run-start Snapshot 读取，避免并发进程冻结“旧 Summary + 新 Handbook”的混合视图；它不覆盖 Phase 1/Phase 2 模型调用。
+
+```text
+Earlier terminal Run
+    ↓
+Phase 1 extraction
+    ↓
+stage1/<run_id>.json
+    ↓
+Phase 2 consolidation
+    ├─ raw_memories.md
+    ├─ rollout_summaries/
+    ├─ MEMORY.md
+    └─ memory_summary.md
+```
+
+Phase 1 和 Phase 2 都是无 Tool 的独立模型请求。Phase 1 失败时该 Run 保持未处理，Phase 2 失败时不推进 consolidation cursor。后台写入不会改变正在执行的 Run；只有之后的新 top-level Run 才会冻结新的 durable memory。Resume 继续复用原 Run Snapshot。
+
+V3 不维护固定 Topic、Candidate、ReviewRecord 或 approve/reject 工作流。显式管理入口只保留 `memory status`、`memory show` 和 `memory consolidate`。
+
+## 6. Tool Runtime
 
 工具统一进入 `ToolRuntime` 执行。
 
@@ -111,7 +143,7 @@ Tool Result
 
 命令执行经过确定性的 Command Policy，再结合 Permission Mode 和 Approval Policy 判断是否允许执行。
 
-## 6. Session、Checkpoint 与 Recovery
+## 7. Session、Checkpoint 与 Recovery
 
 MiniCode 将长期会话和单次运行分开管理：
 
@@ -123,7 +155,7 @@ MiniCode 将长期会话和单次运行分开管理：
 
 模型层的瞬时错误，例如限流、连接失败、超时和服务过载，会经过有界恢复策略处理。上下文超限会交回 Context 层压缩，而已经成功执行的工具不会因为模型重试被自动重放。
 
-## 7. Trace 与 Execution Journal
+## 8. Trace 与 Execution Journal
 
 MiniCode 对运行过程进行显式记录，包括：
 
@@ -137,7 +169,7 @@ MiniCode 对运行过程进行显式记录，包括：
 
 Trace 主要用于调试和复盘，Execution Journal 用于记录具有副作用的关键执行事实。
 
-## 8. Permission 与 Plan Mode
+## 9. Permission 与 Plan Mode
 
 Permission Mode 控制当前 Run 可执行的副作用范围，Approval Policy 决定需要人工确认的操作。
 
@@ -147,7 +179,7 @@ Permission Mode 控制当前 Run 可执行的副作用范围，Approval Policy �
 
 Plan Mode 继续复用同一套 Agent Loop，只调整模型可见工具集合和运行规则。规划阶段只开放低风险只读能力，使模型可以检索仓库并形成计划，同时保持原有 Session、Context 和 Trace 链路。
 
-## 9. Subagent 与 Worktree Worker
+## 10. Subagent 与 Worktree Worker
 
 MiniCode 支持受限的任务委派能力。
 
@@ -155,7 +187,7 @@ MiniCode 支持受限的任务委派能力。
 
 需要隔离修改时，可以使用独立 Git Worktree Worker。Worker 在独立工作树中运行，父 Agent 保留最终集成控制权，避免多个执行单元直接并发修改同一个 Workspace。
 
-## 10. TUI 与 Runtime 边界
+## 11. TUI 与 Runtime 边界
 
 交互层使用 TypeScript TUI，Python Runtime 负责 Agent 语义和执行状态。
 
@@ -175,7 +207,7 @@ TUI 负责输入、Markdown、工具活动、审批面板和状态展示；Sessi
 
 这种边界使终端交互层可以独立演进，同时保持核心 Harness 行为一致。
 
-## 11. Model Provider
+## 12. Model Provider
 
 Agent Loop 只依赖统一模型接口。
 
@@ -183,7 +215,7 @@ Agent Loop 只依赖统一模型接口。
 
 Provider 差异被限制在模型适配层，Context、ToolRuntime、Checkpoint 和 Agent Loop 不需要绑定具体模型厂商。
 
-## 12. Design Scope
+## 13. Design Scope
 
 MiniCode 的设计重点是本地仓库级任务的可靠执行，因此持续控制运行时复杂度：
 

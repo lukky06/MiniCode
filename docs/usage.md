@@ -271,15 +271,27 @@ Agent 正在运行时，可以继续输入补充要求。
 
 ## 12. Memory
 
-MiniCode 支持仓库级长期记忆，用于保存需要跨 Session 复用的约束和项目背景。
+MiniCode 支持仓库级长期记忆，用于保存需要跨 Run 复用的约束、项目决策、失败经验和环境信息。
 
-查看 Memory：
+查看当前仓库 Memory 状态：
 
 ```text
 /memory
 ```
 
-Memory 使用精简索引和按需 Topic 读取，避免把全部长期信息默认塞进每一次模型请求。
+新的 top-level Run 会冻结当时的 `memory_summary.md`、`MEMORY.md` 和 rollout summaries。只有小型 Summary 自动进入 System Prefix；详细 Memory 由模型按需通过 `search(source="memory")` 和 `read(source="memory")` 读取当前 Run 的冻结 Snapshot。
+
+Run 启动后，后台 Memory Pipeline 会在 repository 级非阻塞文件锁保护下处理更早的 terminal Runs：Phase 1 对单个 Run 提取可复用信息，Phase 2 将新增 Stage-1 结果合并到 durable `MEMORY.md` 与 `memory_summary.md`。后台更新不会改变正在运行的 Run，Resume 也继续复用原 Snapshot。
+
+显式管理命令：
+
+```bash
+minicode memory status
+minicode memory show
+minicode memory consolidate
+```
+
+`consolidate` 在 dirty=false 时直接 NOOP；pipeline lock busy 时直接返回，不等待。
 
 ## 13. Review
 

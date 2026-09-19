@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 import difflib
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -20,8 +19,8 @@ from minicode_harness.context import (
     validate_message_protocol,
 )
 from minicode_harness.loop import AgentLoop, AgentLoopConfig, AgentRunResult
-from minicode_harness.memory import (
-    MemorySnapshotStore,
+from minicode_harness.memory.snapshot import MemorySnapshotStore
+from minicode_harness.memory.store import (
     RepositoryMemorySnapshotSource,
     RepositoryMemoryStore,
 )
@@ -32,7 +31,6 @@ from minicode_harness.models import (
     create_model_client,
 )
 from minicode_harness.report import collect_context_metrics
-from minicode_harness.runtime.request_orchestrator import RequestOrchestrator
 from minicode_harness.state import (
     ApprovalStore,
     CheckpointStore,
@@ -44,7 +42,6 @@ from minicode_harness.trace import TraceWriter
 from .models import BenchmarkConstraints, write_json
 from .runner import (
     BENCHMARK_IGNORED_NAMES,
-    BENCHMARK_IGNORED_PATTERNS,
     BenchmarkApprovalClient,
     _changed_paths_from_diff,
     _evaluate_oracle,
@@ -92,8 +89,7 @@ ScenarioModelClientFactory = Callable[
 
 _ABLATION_VARIANTS = (
     BenchmarkScenarioVariant(id="off", memory_mode="off"),
-    BenchmarkScenarioVariant(id="index_only", memory_mode="index_only"),
-    BenchmarkScenarioVariant(id="index_topic", memory_mode="index_topic"),
+    BenchmarkScenarioVariant(id="on", memory_mode="on"),
 )
 
 
@@ -196,16 +192,6 @@ class BenchmarkScenarioRunner:
         results: list[BenchmarkScenarioResult] = []
         for scenario in scenarios:
             variants = self._variants_for(scenario)
-            if scenario.lifecycle is not None:
-                results.extend(
-                    self._run_lifecycle_scenario(
-                        scenario,
-                        variants=variants,
-                        suite_path=suite_path,
-                        output_path=output_path,
-                    )
-                )
-                continue
             for variant in variants:
                 results.append(
                     self._run_scenario(
@@ -225,28 +211,6 @@ class BenchmarkScenarioRunner:
         return summary
 
     def _variants_for(self, scenario: BenchmarkScenario) -> list[BenchmarkScenarioVariant]:
-        if scenario.lifecycle is not None:
-            if self.config.ablation_matrix:
-                raise ValueError(
-                    "The global ablation matrix is incompatible with lifecycle scenarios."
-                )
-            memory_modes = (
-                [self.config.memory_mode]
-                if self.config.memory_mode is not None
-                else list(scenario.lifecycle.consumer_ablation_modes)
-            )
-            compaction_mode = (
-                self.config.context_compaction_mode
-                or scenario.context_compaction_mode
-            )
-            return [
-                BenchmarkScenarioVariant(
-                    id=memory_mode,
-                    memory_mode=memory_mode,
-                    context_compaction_mode=compaction_mode,
-                )
-                for memory_mode in memory_modes
-            ]
         if self.config.ablation_matrix:
             compaction_mode = (
                 self.config.context_compaction_mode
@@ -296,408 +260,6 @@ class BenchmarkScenarioRunner:
                 )
         return variants
 
-    def _run_lifecycle_scenario(
-        self,
-        scenario: BenchmarkScenario,
-        *,
-        variants: list[BenchmarkScenarioVariant],
-        suite_path: Path,
-        output_path: Path,
-    ) -> list[BenchmarkScenarioResult]:
-        """Run Producers once, then fork identical durable state per Consumer mode."""
-
-        lifecycle = scenario.lifecycle
-        assert lifecycle is not None
-        scenario_root = output_path / "scenarios" / scenario.id
-        if scenario_root.exists():
-            _remove_tree(scenario_root)
-        producer_output = scenario_root / "producer"
-        producer_output.mkdir(parents=True)
-
-        source_workspace = _resolve_scenario_workspace(scenario, suite_path)
-        producer_workspace = producer_output / "workspace"
-        _copy_scenario_workspace(
-            source_workspace,
-            producer_workspace,
-            include_git=False,
-        )
-        setup_trace = TraceWriter(producer_output / "setup-trace.jsonl")
-        producer_turns = [
-            turn
-            for turn in scenario.turns
-            if turn.id in set(lifecycle.producer_turn_ids)
-        ]
-        consumer_turns = [
-            turn
-            for turn in scenario.turns
-            if turn.id in set(lifecycle.consumer_turn_ids)
-        ]
-        for index, command in enumerate(scenario.setup.commands, start=1):
-            _run_setup_command(
-                command=command,
-                constraints=_combined_constraints(scenario.turns),
-                workspace=producer_workspace,
-                trace_writer=setup_trace,
-                step=index,
-            )
-        _initialize_benchmark_git_baseline(producer_workspace, setup_trace)
-
-        producer_memory_data = producer_output / "memory-v2-data"
-        producer_repository_memory = RepositoryMemoryStore(
-            producer_workspace,
-            data_dir=producer_memory_data,
-        )
-        producer_session_store = ReplSessionStore(
-            producer_output / "session-data"
-        )
-        producer_sessions: dict[str, ReplSessionMemory] = {}
-        producer_variant = BenchmarkScenarioVariant(
-            id="producer",
-            memory_mode="index_topic",
-            context_compaction_mode=(
-                self.config.context_compaction_mode
-                or scenario.context_compaction_mode
-            ),
-        )
-        producer_model = self.model_client_factory(scenario, producer_variant)
-        producer_results: list[BenchmarkScenarioTurnResult] = []
-        repository_memory_checks: list[BenchmarkRepositoryMemoryCheck] = []
-        producer_error: str | None = None
-        producer_started_at = time.monotonic()
-        try:
-            for turn_index, turn in enumerate(producer_turns, start=1):
-                session_memory = producer_sessions.get(turn.session_key)
-                if session_memory is None:
-                    session_memory = producer_session_store.create(producer_workspace)
-                    producer_sessions[turn.session_key] = session_memory
-                producer_results.append(
-                    self._run_turn(
-                        scenario,
-                        turn,
-                        turn_index=turn_index,
-                        variant=producer_variant,
-                        workspace=producer_workspace,
-                        scenario_output=producer_output,
-                        model_client=producer_model,
-                        repository_memory=producer_repository_memory,
-                        session_memory=session_memory,
-                        memory_aliases={},
-                    )
-                )
-            producer_orchestrator = RequestOrchestrator(
-                repository_memory=producer_repository_memory,
-                review_model_client=producer_model,
-            )
-            for _ in range(8):
-                if not producer_repository_memory.workflow_store.pending_reviews():
-                    break
-                _, reviewed_turns, _, _ = producer_orchestrator.review_pending(force=True)
-                if reviewed_turns == 0:
-                    break
-        except Exception as exc:
-            producer_error = f"{type(exc).__name__}: {exc}"
-        producer_elapsed_seconds = time.monotonic() - producer_started_at
-
-        if not repository_memory_checks:
-            repository_memory_checks = _score_repository_memory(
-                scenario.expected_repository_memory,
-                repository_memory=producer_repository_memory,
-            )
-        repository_memory_passed = all(
-            check.passed for check in repository_memory_checks
-        )
-        producer_memory_entry_count = sum(
-            len(producer_repository_memory.topic_store.active_entries(topic))
-            for topic in producer_repository_memory.topic_store.registered_topics()
-        )
-        expected_memory_entry_count = lifecycle.expected_memory_entry_count
-        capture_passed = (
-            len(producer_results) == len(producer_turns)
-            and (
-                expected_memory_entry_count is None
-                or producer_memory_entry_count == expected_memory_entry_count
-            )
-            and all(
-                turn.tool_calls_passed
-                and not turn.changed_files
-                and turn.error is None
-                for turn in producer_results
-            )
-        )
-        actual_finalization_statuses = [
-            turn.memory_finalization_status for turn in producer_results
-        ]
-        consolidation_protocol_passed = (
-            bool(actual_finalization_statuses)
-            and all(status == "review_recorded" for status in actual_finalization_statuses)
-            and not producer_repository_memory.workflow_store.pending_reviews()
-            and not producer_repository_memory.workflow_store.list_candidates(
-                status="pending"
-            )
-        )
-        producer_succeeded = (
-            producer_error is None
-            and capture_passed
-            and consolidation_protocol_passed
-            and repository_memory_passed
-        )
-        producer_workspace_hash = _directory_manifest_hash(
-            producer_workspace,
-            ignored_patterns=BENCHMARK_IGNORED_PATTERNS,
-        )
-        producer_memory_snapshot_hash = _directory_manifest_hash(
-            producer_memory_data
-        )
-        producer_durable_hash = _directory_manifest_hash(
-            producer_memory_data,
-            ignored_suffixes=(
-                "/events.jsonl",
-                "/review-inbox.jsonl",
-                "/review-state.json",
-            ),
-        )
-        producer_session_ids = {
-            session.session_id for session in producer_sessions.values()
-        }
-        producer_prompts = [turn.prompt for turn in producer_turns]
-        producer_tool_calls = sum(turn.metrics.tool_calls for turn in producer_results)
-        producer_avg_context_tokens = _average(
-            [turn.metrics.context_tokens_avg for turn in producer_results]
-        )
-
-        results: list[BenchmarkScenarioResult] = []
-        for variant in variants:
-            variant_started_at = time.monotonic()
-            variant_output = scenario_root / variant.id
-            variant_output.mkdir(parents=True)
-            workspace = variant_output / "workspace"
-            memory_data = variant_output / "memory-v2-data"
-            turn_results: list[BenchmarkScenarioTurnResult] = []
-            variant_error: str | None = None
-            consumer_start_workspace_hash: str | None = None
-            consumer_start_memory_snapshot_hash: str | None = None
-            durable_memory_hash_before: str | None = None
-            durable_memory_hash_after: str | None = None
-            cross_session_isolation_passed: bool | None = None
-            snapshot_integrity_passed: bool | None = None
-
-            if producer_succeeded:
-                _copy_scenario_workspace(
-                    producer_workspace,
-                    workspace,
-                    include_git=True,
-                )
-                shutil.copytree(producer_memory_data, memory_data)
-                consumer_start_workspace_hash = _directory_manifest_hash(
-                    workspace,
-                    ignored_patterns=BENCHMARK_IGNORED_PATTERNS,
-                )
-                consumer_start_memory_snapshot_hash = _directory_manifest_hash(
-                    memory_data
-                )
-                durable_memory_hash_before = _directory_manifest_hash(
-                    memory_data,
-                    ignored_suffixes=(
-                        "/events.jsonl",
-                        "/review-inbox.jsonl",
-                        "/review-state.json",
-                    ),
-                )
-                snapshot_integrity_passed = (
-                    consumer_start_workspace_hash == producer_workspace_hash
-                    and consumer_start_memory_snapshot_hash
-                    == producer_memory_snapshot_hash
-                    and durable_memory_hash_before == producer_durable_hash
-                )
-                if not snapshot_integrity_passed:
-                    variant_error = "Lifecycle snapshot hash mismatch before Consumer run."
-                repository_memory = RepositoryMemoryStore(
-                    workspace,
-                    data_dir=memory_data,
-                )
-                if (
-                    repository_memory.repository_id
-                    != producer_repository_memory.repository_id
-                ):
-                    snapshot_integrity_passed = False
-                    variant_error = "Repository identity changed across lifecycle fork."
-                session_store = ReplSessionStore(variant_output / "session-data")
-                session_memories: dict[str, ReplSessionMemory] = {}
-                if variant_error is None:
-                    model_client = self.model_client_factory(scenario, variant)
-                    try:
-                        for turn_index, turn in enumerate(consumer_turns, start=1):
-                            session_memory = session_memories.get(turn.session_key)
-                            if session_memory is None:
-                                session_memory = session_store.create(workspace)
-                                session_memories[turn.session_key] = session_memory
-                            turn_results.append(
-                                self._run_turn(
-                                    scenario,
-                                    turn,
-                                    turn_index=turn_index,
-                                    variant=variant,
-                                    workspace=workspace,
-                                    scenario_output=variant_output,
-                                    model_client=model_client,
-                                    repository_memory=repository_memory,
-                                    session_memory=session_memory,
-                                    memory_aliases={},
-                                )
-                            )
-                    except Exception as exc:
-                        variant_error = f"{type(exc).__name__}: {exc}"
-                durable_memory_hash_after = _directory_manifest_hash(
-                    memory_data,
-                    ignored_suffixes=(
-                        "/events.jsonl",
-                        "/review-inbox.jsonl",
-                        "/review-state.json",
-                    ),
-                )
-                snapshot_integrity_passed = (
-                    snapshot_integrity_passed
-                    and durable_memory_hash_before == durable_memory_hash_after
-                )
-                cross_session_isolation_passed = _consumer_sessions_are_isolated(
-                    session_memories.values(),
-                    producer_session_ids=producer_session_ids,
-                    producer_prompts=producer_prompts,
-                )
-            else:
-                _copy_scenario_workspace(
-                    producer_workspace,
-                    workspace,
-                    include_git=True,
-                )
-                variant_error = producer_error or "Producer lifecycle gate failed."
-
-            final_diff_path = variant_output / "final.diff"
-            _write_final_diff(producer_workspace, workspace, final_diff_path)
-            result = _build_scenario_result(
-                scenario=scenario,
-                variant=variant,
-                turn_results=turn_results,
-                elapsed_seconds=(
-                    producer_elapsed_seconds
-                    + (time.monotonic() - variant_started_at)
-                ),
-                memory_aliases={},
-                workspace=workspace,
-                output_dir=variant_output,
-                final_diff_path=final_diff_path,
-                error=variant_error,
-                enforce_required_trace_events=not self.config.baseline_mode,
-            )
-            recall_passed = (
-                all(turn.tool_calls_passed for turn in turn_results)
-                if turn_results
-                else None
-            )
-            if recall_passed and variant.memory_mode == "index_topic":
-                topic_reads = sum(
-                    turn.metrics.memory_topic_read_count for turn in turn_results
-                )
-                recall_passed = (
-                    topic_reads >= lifecycle.min_index_topic_reads
-                    and (
-                        lifecycle.max_index_topic_reads is None
-                        or topic_reads <= lifecycle.max_index_topic_reads
-                    )
-                )
-            hidden_correctness_passed = (
-                all(
-                    turn.error is None
-                    and bool(turn.oracle.get("passed"))
-                    and turn.expected_files_changed
-                    and not turn.forbidden_file_changed
-                    and not turn.unexpected_modified_files
-                    and not turn.max_modified_files_exceeded
-                    for turn in turn_results
-                )
-                if turn_results
-                else None
-            )
-            if not turn_results:
-                cross_session_isolation_passed = None
-            unconditional_e2e_success = bool(
-                producer_succeeded
-                and snapshot_integrity_passed
-                and cross_session_isolation_passed
-                and recall_passed
-                and hidden_correctness_passed
-            )
-            consumer_correctness = (
-                hidden_correctness_passed if producer_succeeded else None
-            )
-            result = result.model_copy(
-                update={
-                    "status": "resolved" if unconditional_e2e_success else "failed",
-                    "resolved": unconditional_e2e_success,
-                    "repository_memory_checks": repository_memory_checks,
-                    "repository_memory_passed": repository_memory_passed,
-                    "producer_succeeded": producer_succeeded,
-                    "capture_passed": capture_passed,
-                    "consolidation_passed": consolidation_protocol_passed,
-                    "consolidation_protocol_passed": consolidation_protocol_passed,
-                    "cross_session_isolation_passed": cross_session_isolation_passed,
-                    "recall_passed": recall_passed,
-                    "hidden_correctness_passed": hidden_correctness_passed,
-                    "snapshot_integrity_passed": snapshot_integrity_passed,
-                    "unconditional_e2e_success": unconditional_e2e_success,
-                    "consumer_correctness_given_producer_succeeded": consumer_correctness,
-                    "producer_tool_calls": producer_tool_calls,
-                    "producer_memory_entry_count": producer_memory_entry_count,
-                    "expected_producer_memory_entry_count": expected_memory_entry_count,
-                    "producer_avg_context_tokens": producer_avg_context_tokens,
-                    "producer_elapsed_seconds": producer_elapsed_seconds,
-                    "producer_workspace_hash": producer_workspace_hash,
-                    "producer_memory_snapshot_hash": producer_memory_snapshot_hash,
-                    "consumer_start_workspace_hash": consumer_start_workspace_hash,
-                    "consumer_start_memory_snapshot_hash": consumer_start_memory_snapshot_hash,
-                    "durable_memory_hash_before": durable_memory_hash_before,
-                    "durable_memory_hash_after": durable_memory_hash_after,
-                    **(
-                        {}
-                        if turn_results
-                        else {
-                            "turn_resolve_rate": None,
-                            "recall_precision": None,
-                            "recall_recall": None,
-                            "recall_f1": None,
-                            "tool_compliance_rate": None,
-                            "avg_context_tokens": None,
-                        }
-                    ),
-                }
-            )
-            write_json(variant_output / "result.json", result)
-            results.append(result)
-        write_json(
-            producer_output / "producer-result.json",
-            {
-                "scenario_id": scenario.id,
-                "producer_succeeded": producer_succeeded,
-                "capture_passed": capture_passed,
-                "producer_memory_entry_count": producer_memory_entry_count,
-                "expected_producer_memory_entry_count": expected_memory_entry_count,
-                "consolidation_passed": consolidation_protocol_passed,
-                "consolidation_protocol_passed": consolidation_protocol_passed,
-                "repository_memory_passed": repository_memory_passed,
-                "repository_memory_checks": [
-                    check.model_dump(mode="json")
-                    for check in repository_memory_checks
-                ],
-                "workspace_hash": producer_workspace_hash,
-                "memory_snapshot_hash": producer_memory_snapshot_hash,
-                "durable_memory_hash": producer_durable_hash,
-                "session_ids": sorted(producer_session_ids),
-                "turns": [turn.model_dump(mode="json") for turn in producer_results],
-                "error": producer_error,
-            },
-        )
-        return results
-
     def _run_scenario(
         self,
         scenario: BenchmarkScenario,
@@ -728,7 +290,7 @@ class BenchmarkScenarioRunner:
         model_client = self.model_client_factory(scenario, variant)
         repository_memory = RepositoryMemoryStore(
             workspace,
-            data_dir=scenario_output / "memory-v2-data",
+            data_dir=scenario_output / "memory-v3-data",
         )
         session_store = ReplSessionStore(scenario_output / "session-data")
         session_memories: dict[str, ReplSessionMemory] = {}
@@ -850,20 +412,10 @@ class BenchmarkScenarioRunner:
         loop: AgentLoop | None = None
         agent_result: AgentRunResult | None = None
         oracle_payload: dict[str, Any] = {}
-        finalized = None
         error: str | None = None
         selected_ids: list[str] = []
 
         try:
-            orchestrator = (
-                RequestOrchestrator(
-                    repository_memory=repository_memory,
-                    trace_writer=trace_writer,
-                    review_model_client=(model_client if scenario.lifecycle is not None else None),
-                )
-                if variant.memory_mode != "off"
-                else None
-            )
             long_term_context, selected_ids, memory_source = _recall_for_turn(
                 variant.memory_mode,
                 repository_memory=repository_memory,
@@ -872,8 +424,9 @@ class BenchmarkScenarioRunner:
             memory_snapshot = (
                 MemorySnapshotStore(turn_output).save(
                     repository_id=repository_memory.repository_id,
-                    rendered_index=memory_source.rendered_index,
-                    topic_payloads=memory_source.topic_payloads,
+                    memory_summary=memory_source.memory_summary,
+                    memory_md=memory_source.memory_md,
+                    rollout_summary_files=memory_source.rollout_summary_files,
                 )
                 if memory_source is not None
                 else None
@@ -915,7 +468,7 @@ class BenchmarkScenarioRunner:
                     data_dir=repository_memory.data_dir,
                     repository_memory=(
                         repository_memory
-                        if variant.memory_mode == "index_topic"
+                        if variant.memory_mode == "on"
                         else None
                     ),
                     long_term_context=long_term_context,
@@ -952,25 +505,6 @@ class BenchmarkScenarioRunner:
                 history_length=len(session_memory.load_message_history()),
                 run_id=run_id,
             )
-            if (
-                agent_result.status == "completed"
-                and final_text
-                and orchestrator is not None
-            ):
-                finalized = orchestrator.finalize_completed_run(
-                    run_id=run_id,
-                    user_input=turn.prompt,
-                    assistant_text=final_text,
-                    observations=(
-                        list(loop.observations) if loop is not None else []
-                    ),
-                    modified_files=(
-                        list(loop.modified_files) if loop is not None else []
-                    ),
-                    verification=(
-                        loop.run_state.verification if loop is not None else None
-                    ),
-                )
             oracle_payload = _evaluate_oracle(
                 turn,
                 workspace=workspace,
@@ -1037,16 +571,6 @@ class BenchmarkScenarioRunner:
             turn.expected.max_modified_files is not None
             and len(changed_files) > turn.expected.max_modified_files
         )
-        expected_finalization_status = (
-            "review_recorded" if scenario.lifecycle is not None else turn.expected_finalization_status
-        )
-        memory_finalization_passed = (
-            expected_finalization_status is None
-            or (
-                finalized is not None
-                and finalized.status == expected_finalization_status
-            )
-        )
         resolved = (
             error is None
             and agent_result is not None
@@ -1060,7 +584,6 @@ class BenchmarkScenarioRunner:
             and not forbidden_changed
             and not unexpected_modified_files
             and not max_modified_files_exceeded
-            and memory_finalization_passed
         )
         metrics = _scenario_turn_metrics(
             events,
@@ -1078,10 +601,6 @@ class BenchmarkScenarioRunner:
             session_id=session_memory.session_id,
             stop_reason=agent_result.stop_reason if agent_result else None,
             final_text=agent_result.final_text if agent_result else None,
-            memory_finalization_status=(finalized.status if finalized is not None else None),
-            memory_pending_user_turns=(finalized.pending_user_turns if finalized is not None else 0),
-            memory_batch_user_turns=0,
-            memory_finalization_passed=memory_finalization_passed,
             oracle=oracle_payload,
             recall=recall,
             tool_call_checks=tool_call_checks,
@@ -1124,7 +643,6 @@ class BenchmarkScenarioRunner:
             resolved=resolved,
             recall_f1=recall.f1,
             fact_retention_rate=result.fact_retention_rate,
-            memory_finalization_status=(finalized.status if finalized is not None else None),
         )
         write_json(turn_output / "result.json", result)
         return result
@@ -1170,69 +688,6 @@ def _copy_scenario_workspace(
     )
 
 
-def _directory_manifest_hash(
-    root: Path,
-    *,
-    ignored_patterns: tuple[str, ...] = (),
-    ignored_suffixes: tuple[str, ...] = (),
-) -> str:
-    manifest: list[dict[str, object]] = []
-    if root.is_dir():
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
-            relative = path.relative_to(root).as_posix()
-            if _path_matches_patterns(relative, ignored_patterns):
-                continue
-            normalized = f"/{relative}"
-            if any(normalized.endswith(suffix) for suffix in ignored_suffixes):
-                continue
-            content = path.read_bytes()
-            manifest.append(
-                {
-                    "path": relative,
-                    "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                }
-            )
-    serialized = json.dumps(
-        manifest,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def _path_matches_patterns(path: str, patterns: tuple[str, ...]) -> bool:
-    from fnmatch import fnmatch
-
-    return any(fnmatch(path, pattern) for pattern in patterns)
-
-
-def _consumer_sessions_are_isolated(
-    sessions: Iterable[ReplSessionMemory],
-    *,
-    producer_session_ids: set[str],
-    producer_prompts: list[str],
-) -> bool:
-    values = list(sessions)
-    if not values:
-        return False
-    for session in values:
-        if session.session_id in producer_session_ids:
-            return False
-        serialized = json.dumps(
-            {
-                "dialogue": [turn.model_dump(mode="json") for turn in session.dialogue],
-                "message_history": session.message_history,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        if any(prompt in serialized for prompt in producer_prompts):
-            return False
-    return True
-
-
 def _combined_constraints(
     turns: list[BenchmarkScenarioTurn],
 ) -> BenchmarkConstraints:
@@ -1260,35 +715,33 @@ def _seed_memories(
     *,
     repository_memory: RepositoryMemoryStore,
 ) -> dict[str, str]:
+    """Materialize deterministic Memory V3 seed facts without a model call."""
+
+    if not scenario.seed_memories:
+        return {}
+
+    handbook_lines = ["# Benchmark Seed Memory"]
+    summary_lines = ["v1"]
     aliases: dict[str, str] = {}
     for seed in scenario.seed_memories:
-        topic = seed.topic or {
-            "preference": "instructions",
-            "coding_style": "instructions",
-            "workflow": "build-and-test",
-            "architecture": "decisions",
-        }[seed.kind]
-        entry_type = {
-            "instructions": "user_instruction",
-            "build-and-test": "procedure",
-            "debugging": "pitfall",
-            "decisions": "decision",
-            "environment": "environment",
-        }[topic]
-        entry = repository_memory.topic_store.add_entry(
-            topic=topic,
-            entry_type=entry_type,
-            summary=seed.content,
-            evidence_ids=[f"benchmark_seed:{scenario.id}:{seed.key}"],
-            entry_id=f"benchmark_{scenario.id}_{seed.key}",
+        aliases[seed.key] = seed.key
+        handbook_lines.extend(
+            [
+                "",
+                f"## {seed.key}",
+                f"Kind: {seed.kind}",
+                "",
+                seed.content.strip(),
+            ]
         )
-        aliases[seed.key] = entry.entry_id
-        if seed.status == "inactive":
-            repository_memory.topic_store.deactivate_entry(
-                topic=topic,
-                entry_id=entry.entry_id,
-            )
-    repository_memory.refresh_index()
+        summary_lines.append(
+            f"- {seed.key}: {seed.kind}; details in MEMORY.md."
+        )
+
+    repository_memory.write_durable_memory(
+        "\n".join(handbook_lines).rstrip() + "\n",
+        "\n".join(summary_lines).rstrip() + "\n",
+    )
     return aliases
 
 
@@ -1297,119 +750,83 @@ def _score_repository_memory(
     *,
     repository_memory: RepositoryMemoryStore,
 ) -> list[BenchmarkRepositoryMemoryCheck]:
-    """Score durable V2 state without constraining consolidation entry counts."""
+    """Score the durable Memory V3 handbook, summary, state, and event log."""
 
     if expectation is None:
         return []
 
     checks: list[BenchmarkRepositoryMemoryCheck] = []
-    workflow = repository_memory.workflow_store.snapshot()
+    handbook = repository_memory.read_memory()
+    summary = repository_memory.read_memory_summary()
+    state = repository_memory.load_state()
     events, event_errors = _read_jsonl_objects_strict(
         repository_memory.event_store.path
     )
 
-    if expectation.pending_reviews is not None:
-        actual = len(workflow.pending_reviews)
-        checks.append(
-            BenchmarkRepositoryMemoryCheck(
-                id="pending_reviews",
-                passed=actual == expectation.pending_reviews,
-                expected=expectation.pending_reviews,
-                actual=actual,
-            )
+    handbook_missing = [
+        keyword
+        for keyword in expectation.required_keywords
+        if keyword.casefold() not in handbook.casefold()
+    ]
+    handbook_forbidden = [
+        keyword
+        for keyword in expectation.forbidden_keywords
+        if keyword.casefold() in handbook.casefold()
+    ]
+    checks.append(
+        BenchmarkRepositoryMemoryCheck(
+            id="memory_handbook",
+            passed=not handbook_missing and not handbook_forbidden,
+            expected={
+                "required_keywords": expectation.required_keywords,
+                "forbidden_keywords": expectation.forbidden_keywords,
+            },
+            actual={
+                "missing_keywords": handbook_missing,
+                "forbidden_hits": handbook_forbidden,
+            },
         )
-    if expectation.pending_candidates is not None:
-        actual = sum(1 for item in workflow.candidates if item.status == "pending")
-        checks.append(
-            BenchmarkRepositoryMemoryCheck(
-                id="pending_candidates",
-                passed=actual == expectation.pending_candidates,
-                expected=expectation.pending_candidates,
-                actual=actual,
-            )
-        )
-    if expectation.registered_topics is not None:
-        expected_topics = sorted(set(expectation.registered_topics))
-        actual_topics = sorted(repository_memory.index_store.registered_topics())
-        checks.append(
-            BenchmarkRepositoryMemoryCheck(
-                id="registered_topics",
-                passed=actual_topics == expected_topics,
-                expected=expected_topics,
-                actual=actual_topics,
-            )
-        )
-        index_path = repository_memory.index_store.path
-        index_content = (
-            index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
-        )
-        latest_refresh = next(
-            (
-                event
-                for event in reversed(events)
-                if event.get("event") == "memory_index_refreshed"
-            ),
-            None,
-        )
-        actual_hash = repository_memory.index_store.content_hash(index_content)
-        index_topics = sorted(
-            topic
-            for topic in actual_topics
-            if f"- {topic}:" in index_content
-        )
-        index_passed = (
-            index_topics == actual_topics
-            and latest_refresh is not None
-            and latest_refresh.get("index_hash") == actual_hash
-        )
-        checks.append(
-            BenchmarkRepositoryMemoryCheck(
-                id="memory_index",
-                passed=index_passed,
-                expected={"registered_topics": expected_topics},
-                actual={
-                    "registered_topics": index_topics,
-                    "index_hash": actual_hash,
-                    "event_index_hash": (
-                        latest_refresh.get("index_hash")
-                        if latest_refresh is not None
-                        else None
-                    ),
-                },
-            )
-        )
+    )
 
-    for topic, topic_expectation in expectation.topics.items():
-        document = repository_memory.topic_store.read(topic)
-        active_text = "\n".join(
-            entry.summary for entry in document.entries if entry.status == "active"
+    summary_missing = [
+        keyword
+        for keyword in expectation.summary_required_keywords
+        if keyword.casefold() not in summary.casefold()
+    ]
+    summary_forbidden = [
+        keyword
+        for keyword in expectation.summary_forbidden_keywords
+        if keyword.casefold() in summary.casefold()
+    ]
+    checks.append(
+        BenchmarkRepositoryMemoryCheck(
+            id="memory_summary",
+            passed=(
+                summary.startswith("v1\n")
+                and not summary_missing
+                and not summary_forbidden
+            ),
+            expected={
+                "version": "v1",
+                "required_keywords": expectation.summary_required_keywords,
+                "forbidden_keywords": expectation.summary_forbidden_keywords,
+            },
+            actual={
+                "version": summary.splitlines()[0] if summary else "",
+                "missing_keywords": summary_missing,
+                "forbidden_hits": summary_forbidden,
+            },
         )
-        normalized = active_text.casefold()
-        missing = [
-            keyword
-            for keyword in topic_expectation.required_keywords
-            if keyword.casefold() not in normalized
-        ]
-        forbidden = [
-            keyword
-            for keyword in topic_expectation.forbidden_keywords
-            if keyword.casefold() in normalized
-        ]
+    )
+
+    if expectation.dirty is not None:
+        dirty = state.latest_stage1_seq > state.last_phase2_input_seq
         checks.append(
             BenchmarkRepositoryMemoryCheck(
-                id=f"topic:{topic}",
-                passed=not missing and not forbidden,
-                expected={
-                    "required_keywords": topic_expectation.required_keywords,
-                    "forbidden_keywords": topic_expectation.forbidden_keywords,
-                },
-                actual={
-                    "active_entry_count": sum(
-                        1 for entry in document.entries if entry.status == "active"
-                    ),
-                    "missing_keywords": missing,
-                    "forbidden_hits": forbidden,
-                },
+                id="dirty",
+                passed=dirty is expectation.dirty,
+                expected=expectation.dirty,
+                actual=dirty,
             )
         )
 
@@ -1429,7 +846,6 @@ def _score_repository_memory(
             },
         )
     )
-
     return checks
 
 
@@ -1467,31 +883,19 @@ def _recall_for_turn(
             "memory_profile_injected",
             injection_mode="off",
             selected_ids=[],
-            registered_topics=[],
+            summary_chars=0,
+            read_memory_available=False,
         )
         return "", [], None
-    read_memory_available = mode == "index_topic"
-    memory_source = (
-        repository_memory.capture_snapshot_source()
-        if read_memory_available
-        else None
-    )
-    rendered = (
-        memory_source.rendered_index
-        if memory_source is not None
-        else repository_memory.render_index(include_read_instructions=False)
-    )
+
+    memory_source = repository_memory.capture_snapshot_source()
+    rendered = memory_source.memory_summary
     trace_writer.write_event(
         "memory_profile_injected",
-        injection_mode=mode,
+        injection_mode="on",
         selected_ids=[],
-        registered_topics=(
-            list(memory_source.topic_payloads)
-            if memory_source is not None
-            else list(repository_memory.index_store.registered_topics())
-        ),
-        index_chars=len(rendered),
-        read_memory_available=read_memory_available,
+        summary_chars=len(rendered),
+        read_memory_available=True,
     )
     return rendered, [], memory_source
 
@@ -2113,11 +1517,9 @@ def _scenario_turn_metrics(
             "read_tool_calls": trace_metrics["read_tool_calls"],
             "unique_read_resources": context.unique_read_resources,
             "repeated_read_calls": context.repeated_read_calls,
-            "memory_topic_read_count": trace_metrics["memory_topic_read_count"],
-            "unique_memory_topics": trace_metrics["unique_memory_topics"],
-            "repeated_memory_topic_reads": trace_metrics[
-                "repeated_memory_topic_reads"
-            ],
+            "memory_read_count": trace_metrics["memory_read_count"],
+            "unique_memory_resources": trace_metrics["unique_memory_resources"],
+            "repeated_memory_reads": trace_metrics["repeated_memory_reads"],
             "history_compaction_tokens_removed": (
                 context.history_compaction_tokens_removed
             ),
@@ -2128,12 +1530,12 @@ def _scenario_turn_metrics(
     )
 
 
-def _successful_memory_topics(events: list[dict[str, Any]]) -> list[str]:
+def _successful_memory_resources(events: list[dict[str, Any]]) -> list[str]:
     memory_calls = {
         str(event.get("tool_call_id")): event
         for event in events
         if event.get("type") == "tool_called"
-        and _event_is_memory_read(event)
+        and _event_is_memory_access(event)
         and event.get("tool_call_id") is not None
     }
     successful_call_ids = {
@@ -2143,24 +1545,28 @@ def _successful_memory_topics(events: list[dict[str, Any]]) -> list[str]:
         and event.get("status") == "ok"
         and str(event.get("tool_call_id")) in memory_calls
     }
-    return [
-        topic
-        for tool_call_id, event in memory_calls.items()
-        if tool_call_id in successful_call_ids
-        if (
-            topic := str(
-                (event.get("args") or {}).get("target")
-                or (event.get("args") or {}).get("topic")
-                or ""
-            )
-        )
-    ]
+    resources: list[str] = []
+    for tool_call_id, event in memory_calls.items():
+        if tool_call_id not in successful_call_ids:
+            continue
+        args = event.get("args") or {}
+        tool = str(event.get("tool") or "")
+        if tool == "read":
+            resource = str(args.get("target") or "MEMORY.md")
+        else:
+            resource = f"search:{str(args.get('query') or '')}"
+        resources.append(resource)
+    return resources
 
 
-def _event_is_memory_read(event: dict[str, Any]) -> bool:
+def _event_is_memory_access(event: dict[str, Any]) -> bool:
     tool_name = str(event.get("tool") or "")
     args = event.get("args")
-    return tool_name == "read" and isinstance(args, dict) and args.get("source") == "memory"
+    return (
+        tool_name in {"read", "search"}
+        and isinstance(args, dict)
+        and args.get("source") == "memory"
+    )
 
 
 def _trace_metrics_from_events(
@@ -2184,8 +1590,8 @@ def _trace_metrics_from_events(
     model_responses = [
         event for event in events if event.get("type") == "model_response"
     ]
-    memory_topics = _successful_memory_topics(events)
-    unique_memory_topics = len(set(memory_topics))
+    memory_resources = _successful_memory_resources(events)
+    unique_memory_resources = len(set(memory_resources))
     return {
         "compression_count": sum(
             1 for event in events if event.get("type") == "context_compressed"
@@ -2214,9 +1620,11 @@ def _trace_metrics_from_events(
             for event in events
             if event.get("type") == "tool_called" and event.get("tool") in read_tools
         ),
-        "memory_topic_read_count": len(memory_topics),
-        "unique_memory_topics": unique_memory_topics,
-        "repeated_memory_topic_reads": len(memory_topics) - unique_memory_topics,
+        "memory_read_count": len(memory_resources),
+        "unique_memory_resources": unique_memory_resources,
+        "repeated_memory_reads": (
+            len(memory_resources) - unique_memory_resources
+        ),
         "unique_read_resources": context.unique_read_resources,
         "repeated_read_calls": context.repeated_read_calls,
     }
@@ -2703,12 +2111,12 @@ def _build_scenario_result(
     turn_event_groups = [
         _read_trace_events(Path(turn.trace_path)) for turn in turn_results
     ]
-    memory_topics = [
-        topic
+    memory_resources = [
+        resource
         for events in turn_event_groups
-        for topic in _successful_memory_topics(events)
+        for resource in _successful_memory_resources(events)
     ]
-    unique_memory_topics = len(set(memory_topics))
+    unique_memory_resources = len(set(memory_resources))
     observed_trace_events = {
         str(event.get("type"))
         for events in turn_event_groups
@@ -2783,9 +2191,11 @@ def _build_scenario_result(
         repeated_read_rate=(
             repeated_reads / read_calls if read_calls else 0.0
         ),
-        memory_topic_read_count=len(memory_topics),
-        unique_memory_topics=unique_memory_topics,
-        repeated_memory_topic_reads=len(memory_topics) - unique_memory_topics,
+        memory_read_count=len(memory_resources),
+        unique_memory_resources=unique_memory_resources,
+        repeated_memory_reads=(
+            len(memory_resources) - unique_memory_resources
+        ),
         compaction_count=compaction_count,
         consecutive_compaction_count=consecutive_compaction_count,
         stable_append_turns=_stable_append_turns(turn_results),
@@ -2890,12 +2300,12 @@ def _build_scenario_summary(
                 [item.history_compression_ratio for item in group]
             ),
             repeated_read_rate=_average([item.repeated_read_rate for item in group]),
-            memory_topic_read_count=sum(
-                item.memory_topic_read_count for item in group
+            memory_read_count=sum(item.memory_read_count for item in group),
+            unique_memory_resources=sum(
+                item.unique_memory_resources for item in group
             ),
-            unique_memory_topics=sum(item.unique_memory_topics for item in group),
-            repeated_memory_topic_reads=sum(
-                item.repeated_memory_topic_reads for item in group
+            repeated_memory_reads=sum(
+                item.repeated_memory_reads for item in group
             ),
             compaction_count=sum(item.compaction_count for item in group),
             consecutive_compaction_count=sum(
@@ -3009,36 +2419,6 @@ def _build_scenario_summary(
                 if correctness_group
                 else None
             ),
-            unconditional_e2e_success_rate=(
-                _average(
-                    [
-                        1.0 if item.unconditional_e2e_success else 0.0
-                        for item in group
-                        if item.unconditional_e2e_success is not None
-                    ]
-                )
-                if any(
-                    item.unconditional_e2e_success is not None for item in group
-                )
-                else None
-            ),
-            consumer_correctness_given_producer_succeeded=(
-                _average(
-                    [
-                        1.0
-                        if item.consumer_correctness_given_producer_succeeded
-                        else 0.0
-                        for item in group
-                        if item.consumer_correctness_given_producer_succeeded
-                        is not None
-                    ]
-                )
-                if any(
-                    item.consumer_correctness_given_producer_succeeded is not None
-                    for item in group
-                )
-                else None
-            ),
         )
     baseline = raw.get(baseline_id)
     baseline_by_scenario = {
@@ -3146,7 +2526,7 @@ def _write_scenario_report(
         "",
         "## Ablation Comparison",
         "",
-        "| Variant | Memory | Compaction | Resolve | Code Correctness | Correctness Delta | Turn Resolve | Recall F1 | Tool Gold | File Gold | Fact Retention | Final Text | Semantic History | Historical | Context Gate | Avg Tokens | Token Delta | Reduction | Repeat Reads | Topic Reads/U/R |",
+        "| Variant | Memory | Compaction | Resolve | Code Correctness | Correctness Delta | Turn Resolve | Recall F1 | Tool Gold | File Gold | Fact Retention | Final Text | Semantic History | Historical | Context Gate | Avg Tokens | Token Delta | Reduction | Repeat Reads | Memory Reads/U/R |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in summary.variants:
@@ -3166,8 +2546,8 @@ def _write_scenario_report(
             f"{_format_optional_number(item.avg_context_tokens)} | "
             f"{item.context_token_delta_vs_baseline:+.0f} | "
             f"{item.history_compression_ratio:.0%} | {item.repeated_read_rate:.0%} | "
-            f"{item.memory_topic_read_count}/{item.unique_memory_topics}/"
-            f"{item.repeated_memory_topic_reads} |"
+            f"{item.memory_read_count}/{item.unique_memory_resources}/"
+            f"{item.repeated_memory_reads} |"
         )
     if any(item.code_correctness_scenario_count for item in summary.variants):
         lines.extend(
@@ -3186,49 +2566,6 @@ def _write_scenario_report(
                 f"{item.positive_transfer_count} | "
                 f"{item.negative_transfer_count} | "
                 f"{item.negative_transfer_rate:.0%} |"
-            )
-    lifecycle_results = [
-        result
-        for result in summary.scenarios
-        if result.unconditional_e2e_success is not None
-    ]
-    if lifecycle_results:
-        lines.extend(
-            [
-                "",
-                "## Repository Memory Lifecycle E2E",
-                "",
-                "| Variant | Unconditional E2E Success | Consumer Correctness Given Producer Succeeded |",
-                "|---|---:|---:|",
-            ]
-        )
-        for item in summary.variants:
-            lines.append(
-                f"| {item.variant.id} | "
-                f"{_format_optional_rate(item.unconditional_e2e_success_rate)} | "
-                f"{_format_optional_rate(item.consumer_correctness_given_producer_succeeded)} |"
-            )
-        lines.extend(
-            [
-                "",
-                "| Scenario | Variant | Producer | Capture | Notes A/E | Consolidation Protocol | Store Contract | Snapshot | Session Isolation | Recall | Hidden Correctness | Producer Tools | Producer Avg Tokens |",
-                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-            ]
-        )
-        for result in lifecycle_results:
-            lines.append(
-                f"| `{result.id}` | {result.variant.id} | "
-                f"{_format_optional_bool(result.producer_succeeded)} | "
-                f"{_format_optional_bool(result.capture_passed)} | "
-                f"{result.producer_memory_entry_count}/{result.expected_producer_memory_entry_count} | "
-                f"{_format_optional_bool(result.consolidation_protocol_passed)} | "
-                f"{_format_optional_bool(result.repository_memory_passed)} | "
-                f"{_format_optional_bool(result.snapshot_integrity_passed)} | "
-                f"{_format_optional_bool(result.cross_session_isolation_passed)} | "
-                f"{_format_optional_bool(result.recall_passed)} | "
-                f"{_format_optional_bool(result.hidden_correctness_passed)} | "
-                f"{result.producer_tool_calls} | "
-                f"{result.producer_avg_context_tokens:.0f} |"
             )
     lines.extend(
         [
@@ -3286,7 +2623,7 @@ def _write_scenario_report(
             "",
             "## Scenario Runs",
             "",
-            "| Scenario | Target | Variant | Resolved | Context Gate | Turns | Required Turns | Recall F1 | Tool Gold | File Gold | Fact Retention | Final Text | Semantic History | Historical | Avg Tokens | Repeated Reads | Topic Reads/U/R |",
+            "| Scenario | Target | Variant | Resolved | Context Gate | Turns | Required Turns | Recall F1 | Tool Gold | File Gold | Fact Retention | Final Text | Semantic History | Historical | Avg Tokens | Repeated Reads | Memory Reads/U/R |",
             "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
@@ -3305,8 +2642,8 @@ def _write_scenario_report(
             f"{_format_optional_rate(result.historical_dialogue_fact_retention)} | "
             f"{_format_optional_number(result.avg_context_tokens)} | "
             f"{result.repeated_read_rate:.0%} | "
-            f"{result.memory_topic_read_count}/{result.unique_memory_topics}/"
-            f"{result.repeated_memory_topic_reads} |"
+            f"{result.memory_read_count}/{result.unique_memory_resources}/"
+            f"{result.repeated_memory_reads} |"
         )
     failed = [result for result in summary.scenarios if not result.resolved]
     lines.extend(["", "## Failed Runs", ""])
@@ -3418,9 +2755,3 @@ def _format_optional_decimal(value: float | None) -> str:
 
 def _format_optional_number(value: float | None) -> str:
     return "N/A" if value is None else f"{value:.0f}"
-
-
-def _format_optional_bool(value: bool | None) -> str:
-    if value is None:
-        return "N/A"
-    return "pass" if value else "fail"

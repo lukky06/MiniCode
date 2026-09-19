@@ -16,7 +16,7 @@ MiniCode 是一个运行在本地代码仓库中的轻量级 Coding Agent Harnes
 - **安全执行**：文件操作受 Workspace 边界保护，命令经过 Policy、Permission 和 Approval 检查。
 - **恢复机制**：支持 Session、Checkpoint、Recovery、Execution Journal 和 stale-write 防护。
 - **交互能力**：提供 TypeScript TUI、Plan Mode、运行中 Steering、Session Fork 和只读 Review。
-- **扩展能力**：支持 Repository Memory、Skills、只读 Subagent、Worktree Worker 和 MCP。
+- **扩展能力**：支持 Repository Memory V3（Run Snapshot + 后台两阶段写入）、Skills、只读 Subagent、Worktree Worker 和 MCP。
 - **可观测与评测**：记录模型调用、Tool Result、验证结果和 Trace，并提供 Benchmark / SWE-bench 适配。
 
 ## 快速开始
