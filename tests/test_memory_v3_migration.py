@@ -69,7 +69,10 @@ def test_v2_active_topics_migrate_once_through_phase2_init(tmp_path: Path) -> No
     )
     client = FakeModelClient(
         {
-            "memory_md": "# Memory\n\nMigrated canonical-history decision.\n",
+            "memory_md": (
+                "# Memory\n\nMigrated canonical-history decision.\n"
+                "Source: rollout_summaries/migration_v2--v2-memory-migration.md\n"
+            ),
             "memory_summary_md": "v1\n- Migrated repository decision.\n",
         }
     )
@@ -82,8 +85,13 @@ def test_v2_active_topics_migrate_once_through_phase2_init(tmp_path: Path) -> No
     assert state.last_phase2_input_seq == 1
     record = store.load_stage1("migration_v2")
     assert record is not None
-    assert "single conversation source" in record.raw_memory
-    assert "inactive" not in record.raw_memory.lower()
+    assert record.status == "consolidated"
+    assert record.raw_memory == ""
+    rollout = (
+        store.rollout_summaries_dir / "migration_v2--v2-memory-migration.md"
+    ).read_text(encoding="utf-8")
+    assert "single conversation source" in rollout
+    assert "inactive" not in rollout.lower()
     payload = json.loads(client.requests[0].messages[0]["content"])
     assert payload["existing_memory_md"] == ""
     assert "do not migrate candidate" not in json.dumps(payload)

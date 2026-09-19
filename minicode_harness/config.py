@@ -21,6 +21,7 @@ class UserConfig(BaseModel):
     execution_mode: ExecutionMode | None = None
     sandbox: SandboxMode | None = None
     sandbox_image: str | None = None
+    memory_phase2_cooldown_minutes: int = Field(default=360, ge=0, le=10_080)
     command_rules: list[CommandRule] = Field(default_factory=list)
 
     @field_validator("provider", "model", "sandbox_image")

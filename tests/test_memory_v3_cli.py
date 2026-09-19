@@ -22,7 +22,10 @@ class FakeClient:
         return ModelResponse(
             final_text=json.dumps(
                 {
-                    "memory_md": "# Memory\n\nUse focused tests.\n",
+                    "memory_md": (
+                        "# Memory\n\nUse focused tests.\n"
+                        "Source: rollout_summaries/run_20260918_001--focused-tests.md\n"
+                    ),
                     "memory_summary_md": "v1\n- Focused-test preference.\n",
                 }
             )

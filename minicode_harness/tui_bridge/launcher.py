@@ -31,6 +31,7 @@ def launch_tui(
     skills: Sequence[str] | None,
     skills_enabled: bool,
     repository_memory_enabled: bool,
+    memory_phase2_cooldown_minutes: int,
     subagents_enabled: bool,
     mcp_config: Path | None,
     session_mode: str,
@@ -61,6 +62,7 @@ def launch_tui(
         skills=skills,
         skills_enabled=skills_enabled,
         repository_memory_enabled=repository_memory_enabled,
+        memory_phase2_cooldown_minutes=memory_phase2_cooldown_minutes,
         subagents_enabled=subagents_enabled,
         mcp_config=mcp_config,
         session_mode=session_mode,
@@ -134,6 +136,7 @@ def _build_environment(
     skills: Sequence[str] | None,
     skills_enabled: bool,
     repository_memory_enabled: bool,
+    memory_phase2_cooldown_minutes: int,
     subagents_enabled: bool,
     mcp_config: Path | None,
     session_mode: str,
@@ -157,6 +160,9 @@ def _build_environment(
         "MINICODE_TUI_COLLABORATION_MODE": collaboration_mode,
         "MINICODE_TUI_SKILLS": json.dumps(list(skills or [])),
         "MINICODE_TUI_MCP_CONFIG": str(mcp_config) if mcp_config else None,
+        "MINICODE_TUI_MEMORY_PHASE2_COOLDOWN_MINUTES": str(
+            memory_phase2_cooldown_minutes
+        ),
         "MINICODE_TUI_SESSION_MODE": session_mode,
         "MINICODE_TUI_SESSION_ID": session_id,
         "MINICODE_TUI_INITIAL_TASK": initial_task,

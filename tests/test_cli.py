@@ -86,6 +86,7 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
                 'execution_mode = "review-changes"',
                 'sandbox = "docker"',
                 'sandbox_image = "python:3.12"',
+                "memory_phase2_cooldown_minutes = 45",
             ]
         )
         + "\n",
@@ -108,6 +109,7 @@ def test_user_config_toml_supplies_interactive_defaults(tmp_path, monkeypatch) -
     assert captured["execution_mode"] == "review-changes"
     assert captured["sandbox_mode"] == "docker"
     assert captured["sandbox_image"] == "python:3.12"
+    assert captured["memory_phase2_cooldown_minutes"] == 45
 
 
 def test_interactive_terminal_allows_unconfigured_default_docker(monkeypatch) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from threading import Thread
 from typing import Any, Callable
@@ -23,7 +24,11 @@ from minicode_harness.memory.repository_id import RepositoryIdentityUnavailable
 from minicode_harness.memory.snapshot import MemorySnapshotStore
 from minicode_harness.memory.store import RepositoryMemoryStore
 from minicode_harness.state import ReplSessionMemory, RunSession
-from minicode_harness.models import ModelClient, create_model_client
+from minicode_harness.models import (
+    ModelClient,
+    classify_model_exception,
+    create_model_client,
+)
 from minicode_harness.output import OutputSink, emit_semantic_compaction_event
 from minicode_harness.policy import (
     CommandRule,
@@ -70,6 +75,7 @@ class RunExecutionRequest(BaseModel):
     skills: list[str] | None = None
     skills_enabled: bool = True
     repository_memory_enabled: bool = True
+    memory_phase2_cooldown_minutes: int = Field(default=360, ge=0, le=10_080)
     subagents_enabled: bool = True
     worktree_workers_enabled: bool = True
     mcp_config: Path | None = None
@@ -121,15 +127,33 @@ def _emit_optional(output_sink: OutputSink, name: str, *args, **kwargs) -> None:
         handler(*args, **kwargs)
 
 
+def _model_access_error_message(kind: str, *, memory: bool = False) -> str | None:
+    prefix = "Repository Memory 后台任务已停止：" if memory else ""
+    if kind == "billing":
+        return (
+            f"{prefix}模型 API 余额不足，当前 Run 已停止。"
+            "请充值当前 Provider 账户或切换 Provider。"
+        )
+    if kind == "authentication":
+        return (
+            f"{prefix}模型 API 鉴权失败，当前 Run 已停止。"
+            "请检查当前 Provider 的 API Key 或认证配置。"
+        )
+    return None
+
+
 def _start_memory_pipeline(
     *,
     workspace: Path,
     data_dir: Path,
     run_store: RunStore,
-    current_run_id: str,
+    current_run_id: str | None,
     provider: str,
     model: str | None,
     trace_writer: TraceWriter,
+    output_sink: OutputSink,
+    phase2_cooldown_minutes: int = 360,
+    wait_for_lock: bool = False,
 ) -> None:
     Thread(
         target=_run_memory_pipeline_background,
@@ -141,8 +165,11 @@ def _start_memory_pipeline(
             "provider": provider,
             "model": model,
             "trace_writer": trace_writer,
+            "output_sink": output_sink,
+            "phase2_cooldown_minutes": phase2_cooldown_minutes,
+            "wait_for_lock": wait_for_lock,
         },
-        name=f"minicode-memory-{current_run_id}",
+        name=f"minicode-memory-{current_run_id or 'finalize'}",
         daemon=True,
     ).start()
 
@@ -152,14 +179,17 @@ def _run_memory_pipeline_background(
     workspace: Path,
     data_dir: Path,
     run_store: RunStore,
-    current_run_id: str,
+    current_run_id: str | None,
     provider: str,
     model: str | None,
     trace_writer: TraceWriter,
+    output_sink: OutputSink,
+    phase2_cooldown_minutes: int = 360,
+    wait_for_lock: bool = False,
 ) -> None:
     try:
         store = RepositoryMemoryStore(workspace, data_dir=data_dir)
-        lock = store.try_pipeline_lock()
+        lock = store.pipeline_lock(blocking=wait_for_lock)
         if lock is None:
             trace_writer.write_event(
                 "memory_pipeline_skipped",
@@ -182,7 +212,11 @@ def _run_memory_pipeline_background(
                 current_run_id=current_run_id,
                 trace_writer=trace_writer,
             )
-            phase2 = Phase2Consolidator(store, memory_client).consolidate()
+            phase2 = Phase2Consolidator(
+                store,
+                memory_client,
+                cooldown=timedelta(minutes=phase2_cooldown_minutes),
+            ).consolidate()
             trace_writer.write_event(
                 "memory_phase2_finished",
                 status=phase2.status,
@@ -196,6 +230,12 @@ def _run_memory_pipeline_background(
             error_type=type(exc).__name__,
             error=str(exc),
         )
+        message = _model_access_error_message(
+            classify_model_exception(exc).kind,
+            memory=True,
+        )
+        if message is not None:
+            _emit_optional(output_sink, "error", message)
 
 
 def build_agent_loop_from_session(
@@ -621,6 +661,9 @@ class RunExecutor:
                 provider=request.provider,
                 model=request.model,
                 trace_writer=trace_writer,
+                output_sink=output_sink,
+                phase2_cooldown_minutes=request.memory_phase2_cooldown_minutes,
+                wait_for_lock=False,
             )
 
         loop = build_agent_loop_from_session(
@@ -663,6 +706,22 @@ class RunExecutor:
             steps=agent_result.steps,
             tool_calls=agent_result.tool_calls,
         )
+        if (
+            memory_snapshot is not None
+            and agent_result.stop_reason not in {"model_billing", "model_authentication"}
+        ):
+            _start_memory_pipeline(
+                workspace=workspace,
+                data_dir=repository_memory.data_dir,
+                run_store=self.run_store,
+                current_run_id=None,
+                provider=request.provider,
+                model=request.model,
+                trace_writer=trace_writer,
+                output_sink=output_sink,
+                phase2_cooldown_minutes=request.memory_phase2_cooldown_minutes,
+                wait_for_lock=True,
+            )
 
         final_text = agent_result.final_text or ""
         if self.session_memory is not None:
@@ -684,6 +743,11 @@ class RunExecutor:
             run_id=session.run_id,
             stop_reason=agent_result.stop_reason,
         )
+        message = _model_access_error_message(
+            str(agent_result.stop_reason or "").removeprefix("model_")
+        )
+        if message is not None:
+            _emit_optional(output_sink, "error", message)
         return RunExecutionResult(
             run_id=session.run_id,
             run_path=run_path,

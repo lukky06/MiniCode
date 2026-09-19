@@ -82,6 +82,9 @@ def test_context_builder_renders_system_only_without_redundant_runtime_fields(tm
     assert "解释关注功能" not in rendered
     assert rendered.count("长期记忆：") == 1
     assert "Repository Memory Index" not in rendered
+    assert "历史经验和检索线索" in rendered
+    assert "当前代码、配置、测试结果和仓库规则" in rendered
+    assert "以当前仓库证据为准" in rendered
     assert rendered.count("仓库提示：") == 1
     assert "Repository Structure Card" not in rendered
     assert "pyproject.toml" in rendered

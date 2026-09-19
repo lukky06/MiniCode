@@ -71,7 +71,13 @@ def build_stable_system_prefix(
         headings=("Repository Memory Index:",),
     )
     if memory_index:
-        sections.append("长期记忆：\n" + memory_index)
+        sections.append(
+            "长期记忆：\n"
+            "Repository Memory 仅作为历史经验和检索线索；"
+            "当前代码、配置、测试结果和仓库规则是当前事实来源。"
+            "若长期记忆与当前仓库证据冲突，以当前仓库证据为准。\n"
+            + memory_index
+        )
 
     skills = list(available_skills)
     if skills:

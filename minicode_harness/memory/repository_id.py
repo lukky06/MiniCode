@@ -6,15 +6,18 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 from minicode_harness.storage import default_data_dir
 
 
 _ZERO_OID = re.compile(r"^0{40}$|^0{64}$")
 _OID = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
-_REMOTE_ORIGIN_SECTION = re.compile(r'^\s*\[\s*remote\s+"origin"\s*\]\s*$', re.IGNORECASE)
+_REMOTE_SECTION = re.compile(r'^\s*\[\s*remote\s+"([^"]+)"\s*\]\s*$', re.IGNORECASE)
 _SECTION = re.compile(r"^\s*\[.*\]\s*$")
 _ORIGIN_URL = re.compile(r"^\s*url\s*=\s*(.*?)\s*$", re.IGNORECASE)
+_SCP_REMOTE = re.compile(r"^(?:[^@/\s]+@)?(?P<host>[^:/\s]+):(?P<path>.+)$")
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:/")
 
 
 class RepositoryIdentityUnavailable(RuntimeError):
@@ -44,7 +47,7 @@ def resolve_repository_identity(workspace: Path | str) -> RepositoryIdentity:
         source = "local_markers"
     else:
         _, common_git_dir = _resolve_git_dirs(root)
-        remote = _read_origin_remote(common_git_dir)
+        remote = _read_repository_remote(common_git_dir)
         if remote:
             basis = f"remote\n{_normalize_remote(remote)}"
             source = "git_remote"
@@ -119,7 +122,7 @@ def _resolve_git_dirs(root: Path) -> tuple[Path, Path]:
         ) from exc
 
 
-def _read_origin_remote(common_git_dir: Path) -> str:
+def _read_repository_remote(common_git_dir: Path) -> str:
     config = common_git_dir / "config"
     try:
         lines = config.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -130,16 +133,23 @@ def _read_origin_remote(common_git_dir: Path) -> str:
             f"Git config is unavailable for {common_git_dir}: {type(exc).__name__}."
         ) from exc
 
-    in_origin = False
+    remotes: dict[str, str] = {}
+    current_remote: str | None = None
     for line in lines:
         if _SECTION.match(line):
-            in_origin = bool(_REMOTE_ORIGIN_SECTION.match(line))
+            match = _REMOTE_SECTION.match(line)
+            current_remote = match.group(1).lower() if match else None
             continue
-        if not in_origin:
+        if current_remote is None:
             continue
         match = _ORIGIN_URL.match(line)
         if match:
-            return match.group(1).strip()
+            remotes[current_remote] = match.group(1).strip()
+
+    if "origin" in remotes:
+        return remotes["origin"]
+    if len(remotes) == 1:
+        return next(iter(remotes.values()))
     return ""
 
 
@@ -170,9 +180,28 @@ def _read_initial_commit(common_git_dir: Path) -> str:
 
 def _normalize_remote(remote: str) -> str:
     normalized = remote.strip().replace("\\", "/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
-    return normalized.lower()
+
+    if "://" in normalized:
+        parsed = urlsplit(normalized)
+        if parsed.hostname:
+            host = parsed.hostname.lower()
+            if parsed.port is not None:
+                host = f"{host}:{parsed.port}"
+            path = _trim_git_suffix(parsed.path.strip("/"))
+            return f"{host}/{path}".lower()
+
+    if not _WINDOWS_DRIVE.match(normalized):
+        match = _SCP_REMOTE.match(normalized)
+        if match is not None:
+            host = match.group("host").lower()
+            path = _trim_git_suffix(match.group("path").strip("/"))
+            return f"{host}/{path}".lower()
+
+    return _trim_git_suffix(normalized.rstrip("/")).lower()
+
+
+def _trim_git_suffix(value: str) -> str:
+    return value[:-4] if value.lower().endswith(".git") else value
 
 
 def _repository_markers(root: Path) -> list[str]:

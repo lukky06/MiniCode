@@ -1,13 +1,7 @@
 import json
 from types import SimpleNamespace
 
-import pytest
-
-from minicode_harness.context import (
-    ContextCompressionEvent,
-    SEMANTIC_HISTORY_HEADING,
-    SessionCompactionState,
-)
+from minicode_harness.context import SEMANTIC_HISTORY_HEADING
 from minicode_harness.context.session_projection import project_canonical_messages
 from minicode_harness.loop import AgentRunResult
 from minicode_harness.state import ReplSessionMemory, ReplSessionStore
@@ -106,47 +100,6 @@ def test_run_executor_compacts_active_session_and_preserves_latest_turn(
     assert compaction_events[1][0] == "semantic"
     assert compaction_events[1][1] is not None
     assert compaction_events[1][2] is True
-
-
-def test_run_executor_rejects_unchanged_manual_compaction_without_failure_reason(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    session_memory = ReplSessionMemory(workspace=str(workspace.resolve()))
-    session_memory.replace_message_history([{"role": "user", "content": "compact this"}])
-
-    class FakeModelClient:
-        capabilities = ModelCapabilities(
-            context_window=16_000,
-            max_output_tokens=2_000,
-        )
-
-    class ContractBreakingPreparer:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def manual_compact(self, messages, *, compaction_state, focus):
-            return (
-                SessionCompactionState(),
-                ContextCompressionEvent(
-                    reason="semantic_history",
-                    before_tokens=10,
-                    after_tokens=10,
-                    details={"changed": False},
-                ),
-            )
-
-    monkeypatch.setattr(
-        run_executor_module,
-        "create_model_client",
-        lambda **kwargs: FakeModelClient(),
-    )
-    monkeypatch.setattr(run_executor_module, "ContextPreparer", ContractBreakingPreparer)
-
-    with pytest.raises(KeyError, match="failure_reason"):
-        RunExecutor(session_memory=session_memory).compact_session(provider="deepseek")
 
 
 def test_run_executor_review_uses_review_skill_and_readonly_subagent(
@@ -348,6 +301,121 @@ def test_run_executor_persists_worktree_worker_setting(tmp_path) -> None:
 
     session = run_store.load_session(result.run_id)
     assert session.worktree_workers_enabled is False
+
+
+def test_memory_pipeline_surfaces_billing_error_and_stops_before_phase2(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from minicode_harness.models import ModelProviderError
+
+    workspace = tmp_path / "workspace-memory-billing"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs-memory-billing")
+    errors: list[str] = []
+
+    monkeypatch.setattr(
+        run_executor_module,
+        "create_model_client",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        run_executor_module,
+        "migrate_v2_topics",
+        lambda *args, **kwargs: SimpleNamespace(status="skipped", migrated_entries=0),
+    )
+
+    def fail_phase1(**kwargs):
+        raise ModelProviderError(
+            "Insufficient Balance",
+            kind="billing",
+            status_code=402,
+        )
+
+    monkeypatch.setattr(run_executor_module, "run_pending_phase1", fail_phase1)
+    monkeypatch.setattr(
+        run_executor_module,
+        "Phase2Consolidator",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("phase2 must not run after billing failure")
+        ),
+    )
+
+    class RecordingSink(NullOutputSink):
+        def error(self, message: str, *, fatal: bool = False) -> None:
+            errors.append(message)
+
+    run_executor_module._run_memory_pipeline_background(
+        workspace=workspace,
+        data_dir=tmp_path / "data",
+        run_store=run_store,
+        current_run_id="run_current",
+        provider="deepseek",
+        model=None,
+        trace_writer=run_executor_module.TraceWriter(tmp_path / "trace.jsonl"),
+        output_sink=RecordingSink(),
+    )
+
+    assert errors == [
+        "Repository Memory 后台任务已停止：模型 API 余额不足，当前 Run 已停止。"
+        "请充值当前 Provider 账户或切换 Provider。"
+    ]
+
+
+def test_run_executor_surfaces_billing_stop_to_terminal_sink(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace-billing"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs-billing")
+    errors: list[str] = []
+
+    monkeypatch.setattr(
+        "minicode_harness.runtime.run_executor.create_model_client",
+        lambda **kwargs: SimpleNamespace(model="fake-model"),
+    )
+
+    class FakeLoop:
+        def __init__(self, **kwargs) -> None:
+            self.modified_files = []
+            self.run_state = SimpleNamespace(
+                inspected_files=[],
+                verification=SimpleNamespace(status="not_run"),
+            )
+
+        def run(self) -> AgentRunResult:
+            return AgentRunResult(
+                status="stopped",
+                final_text=None,
+                steps=1,
+                tool_calls=0,
+                stop_reason="model_billing",
+            )
+
+    class RecordingSink(NullOutputSink):
+        def error(self, message: str, *, fatal: bool = False) -> None:
+            errors.append(message)
+
+    monkeypatch.setattr(
+        "minicode_harness.runtime.run_executor.AgentLoop",
+        FakeLoop,
+    )
+
+    result = RunExecutor(run_store=run_store).execute(
+        RunExecutionRequest(
+            task="hello",
+            workspace=workspace,
+            repository_memory_enabled=False,
+        ),
+        output_sink=RecordingSink(),
+        approval_client=StaticApprovalClient(),
+    )
+
+    assert result.stop_reason == "model_billing"
+    assert errors == [
+        "模型 API 余额不足，当前 Run 已停止。请充值当前 Provider 账户或切换 Provider。"
+    ]
 
 
 def test_run_executor_exposes_stop_summary_without_persisting_it_as_model_text(

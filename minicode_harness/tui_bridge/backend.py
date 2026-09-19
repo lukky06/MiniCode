@@ -408,6 +408,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skill", action="append", default=None)
     parser.add_argument("--no-skills", action="store_true")
     parser.add_argument("--no-repository-memory", action="store_true")
+    parser.add_argument(
+        "--memory-phase2-cooldown-minutes",
+        type=int,
+        default=int(
+            os.environ.get("MINICODE_TUI_MEMORY_PHASE2_COOLDOWN_MINUTES", "360")
+        ),
+    )
     parser.add_argument("--no-subagents", action="store_true")
     parser.add_argument("--mcp-config", type=Path)
     parser.add_argument(
@@ -483,6 +490,7 @@ def _build_backend(
             skills=args.skill,
             skills_enabled=not args.no_skills,
             repository_memory_enabled=not args.no_repository_memory,
+            memory_phase2_cooldown_minutes=args.memory_phase2_cooldown_minutes,
             subagents_enabled=not args.no_subagents,
             mcp_config=args.mcp_config,
             stream_model=True,

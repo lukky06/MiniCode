@@ -115,6 +115,47 @@ def test_repository_identity_uses_origin_without_git_subprocess(
     assert identity.source == "git_remote"
 
 
+def test_repository_identity_uses_single_non_origin_remote(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    _git(workspace, "init")
+    _git(workspace, "remote", "add", "public", "https://github.com/example/project.git")
+
+    identity = resolve_repository_identity(workspace)
+
+    assert identity.source == "git_remote"
+
+
+def test_repository_identity_normalizes_https_and_ssh_remote_forms(
+    tmp_path: Path,
+) -> None:
+    https_workspace = tmp_path / "https-project"
+    ssh_workspace = tmp_path / "ssh-project"
+    https_workspace.mkdir()
+    ssh_workspace.mkdir()
+    _git(https_workspace, "init")
+    _git(ssh_workspace, "init")
+    _git(
+        https_workspace,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/Example/Project.git",
+    )
+    _git(
+        ssh_workspace,
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:Example/Project.git",
+    )
+
+    https_identity = resolve_repository_identity(https_workspace)
+    ssh_identity = resolve_repository_identity(ssh_workspace)
+
+    assert https_identity.repository_id == ssh_identity.repository_id
+
+
 def test_repository_identity_reads_common_git_dir_for_linked_worktree(
     tmp_path: Path,
 ) -> None:

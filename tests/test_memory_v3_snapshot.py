@@ -109,6 +109,34 @@ def test_snapshot_waits_for_complete_durable_pair(
     assert source.memory_summary == "v1\nnew\n"
 
 
+def test_snapshot_source_bounds_rollouts_and_prioritizes_memory_references(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace-bounded"
+    workspace.mkdir()
+    repository = RepositoryMemoryStore(workspace, data_dir=tmp_path / "data-bounded")
+    names = []
+    for index, slug in enumerate(("first", "second", "third"), start=1):
+        path = repository.write_rollout_summary(
+            run_id=f"run_20260918_00{index}",
+            rollout_slug=slug,
+            content=f"# {slug}\n",
+        )
+        names.append(path.name)
+    repository.write_durable_memory(
+        (
+            "# Memory\n"
+            f"- first source: rollout_summaries/{names[0]}\n"
+            f"- third source: rollout_summaries/{names[2]}\n"
+        ),
+        "v1\n- bounded\n",
+    )
+
+    source = repository.capture_snapshot_source(rollout_limit=2)
+
+    assert list(source.rollout_summary_files) == [names[0], names[2]]
+
+
 def test_v3_snapshot_freezes_summary_and_memory_handbook(tmp_path: Path) -> None:
     repository, snapshot_store, snapshot, rollout_name = _seed(tmp_path)
 

@@ -26,7 +26,7 @@ def test_new_run_freezes_v3_memory_before_background_pipeline(
         "v1\n- Summary only.\n",
     )
     run_store = RunStore(tmp_path / "runs")
-    calls: dict[str, object] = {}
+    calls: dict[str, object] = {"background": []}
 
     model_client = SimpleNamespace(
         model="fake-model",
@@ -64,14 +64,15 @@ def test_new_run_freezes_v3_memory_before_background_pipeline(
     monkeypatch.setattr(run_executor_module, "AgentLoop", FakeLoop)
 
     def fake_start_memory_pipeline(**kwargs) -> None:
-        snapshot_store = MemorySnapshotStore(
-            kwargs["run_store"].path_for(kwargs["current_run_id"])
-        )
-        snapshot = snapshot_store.load()
-        assert snapshot is not None
-        assert snapshot_store.read_summary() == "v1\n- Summary only.\n"
-        assert "SECRET HANDBOOK DETAIL" in snapshot_store.read_memory()
-        calls["background"] = kwargs
+        if kwargs["current_run_id"] is not None:
+            snapshot_store = MemorySnapshotStore(
+                kwargs["run_store"].path_for(kwargs["current_run_id"])
+            )
+            snapshot = snapshot_store.load()
+            assert snapshot is not None
+            assert snapshot_store.read_summary() == "v1\n- Summary only.\n"
+            assert "SECRET HANDBOOK DETAIL" in snapshot_store.read_memory()
+        calls["background"].append(kwargs)
 
     monkeypatch.setattr(
         run_executor_module,
@@ -89,7 +90,12 @@ def test_new_run_freezes_v3_memory_before_background_pipeline(
     assert loop_kwargs["long_term_context"] == "v1\n- Summary only.\n"
     assert "SECRET HANDBOOK DETAIL" not in loop_kwargs["long_term_context"]
     assert loop_kwargs["memory_snapshot_hash"]
-    background = calls["background"]
-    assert background["current_run_id"] == result.run_id
-    assert background["workspace"] == workspace.resolve()
-    assert background["provider"] == "qwen"
+    start_background, final_background = calls["background"]
+    assert start_background["current_run_id"] == result.run_id
+    assert start_background["workspace"] == workspace.resolve()
+    assert start_background["provider"] == "qwen"
+    assert start_background["wait_for_lock"] is False
+    assert start_background["phase2_cooldown_minutes"] == 360
+    assert final_background["current_run_id"] is None
+    assert final_background["wait_for_lock"] is True
+    assert final_background["phase2_cooldown_minutes"] == 360

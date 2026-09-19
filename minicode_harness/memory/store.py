@@ -18,6 +18,9 @@ from .repository_id import RepositoryIdentity, resolve_repository_identity
 from .types import MemoryPipelineState, Stage1Record
 
 
+DEFAULT_SNAPSHOT_ROLLOUT_LIMIT = 64
+
+
 @dataclass(frozen=True)
 class RepositoryMemorySnapshotSource:
     memory_summary: str
@@ -163,7 +166,13 @@ class RepositoryMemoryStore:
     def write_raw_memories(self, content: str) -> None:
         _atomic_write_text(self.raw_memories_path, content)
 
-    def capture_snapshot_source(self) -> RepositoryMemorySnapshotSource:
+    def capture_snapshot_source(
+        self,
+        *,
+        rollout_limit: int = DEFAULT_SNAPSHOT_ROLLOUT_LIMIT,
+    ) -> RepositoryMemorySnapshotSource:
+        if rollout_limit < 0:
+            raise ValueError("rollout_limit must be non-negative.")
         with self.durable_view_lock():
             memory_summary = self.read_memory_summary()
             if not memory_summary:
@@ -172,19 +181,47 @@ class RepositoryMemoryStore:
                     memory_md="",
                     rollout_summary_files={},
                 )
+            memory_md = self.read_memory()
             return RepositoryMemorySnapshotSource(
                 memory_summary=memory_summary,
-                memory_md=self.read_memory(),
-                rollout_summary_files=self._read_rollout_summaries(),
+                memory_md=memory_md,
+                rollout_summary_files=self._read_rollout_summaries(
+                    memory_md=memory_md,
+                    limit=rollout_limit,
+                ),
             )
 
-    def _read_rollout_summaries(self) -> dict[str, str]:
-        if not self.rollout_summaries_dir.is_dir():
+    def _read_rollout_summaries(
+        self,
+        *,
+        memory_md: str,
+        limit: int,
+    ) -> dict[str, str]:
+        if not self.rollout_summaries_dir.is_dir() or limit == 0:
             return {}
-        return {
-            path.name: path.read_text(encoding="utf-8")
+
+        paths = {
+            path.name: path
             for path in sorted(self.rollout_summaries_dir.glob("*.md"))
             if path.is_file()
+        }
+        ordered_names: list[str] = []
+        seen: set[str] = set()
+        for name in re.findall(
+            r"rollout_summaries/([A-Za-z0-9._-]+\.md)",
+            memory_md,
+        ):
+            if name in paths and name not in seen:
+                ordered_names.append(name)
+                seen.add(name)
+        for name in reversed(sorted(paths)):
+            if name not in seen:
+                ordered_names.append(name)
+                seen.add(name)
+
+        return {
+            name: paths[name].read_text(encoding="utf-8")
+            for name in ordered_names[:limit]
         }
 
     def rollout_summary_filename(
@@ -228,6 +265,24 @@ class RepositoryMemoryStore:
                 )
             self._write_durable_memory_unlocked(memory_md, memory_summary_md)
 
+    def compact_stage1_records(self, records: list[Stage1Record]) -> None:
+        for record in records:
+            compacted = Stage1Record(
+                run_id=record.run_id,
+                status="consolidated",
+                seq=record.seq,
+                rollout_slug=record.rollout_slug,
+            )
+            _atomic_write_text(
+                self.stage1_path(record.run_id),
+                json.dumps(
+                    compacted.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+            )
+
     def list_stage1_records(self) -> list[Stage1Record]:
         if not self.stage1_dir.is_dir():
             return []
@@ -236,8 +291,11 @@ class RepositoryMemoryStore:
             for path in sorted(self.stage1_dir.glob("*.json"))
         ]
 
+    def pipeline_lock(self, *, blocking: bool) -> _MemoryFileLock | None:
+        return _acquire_file_lock(self.pipeline_lock_path, blocking=blocking)
+
     def try_pipeline_lock(self) -> _MemoryFileLock | None:
-        return _acquire_file_lock(self.pipeline_lock_path, blocking=False)
+        return self.pipeline_lock(blocking=False)
 
     def durable_view_lock(self) -> _MemoryFileLock:
         lock = _acquire_file_lock(self.durable_lock_path, blocking=True)

@@ -34,9 +34,15 @@ def _store(tmp_path: Path) -> RepositoryMemoryStore:
     return RepositoryMemoryStore(workspace, data_dir=tmp_path / "data")
 
 
-def _memory_output(label: str = "focused") -> dict[str, str]:
+def _memory_output(
+    label: str = "focused",
+    source: str = "run_20260918_001--focused-tests.md",
+) -> dict[str, str]:
     return {
-        "memory_md": f"# Durable Memory\n\n- {label}\n",
+        "memory_md": (
+            f"# Durable Memory\n\n- {label}\n"
+            f"  Source: rollout_summaries/{source}\n"
+        ),
         "memory_summary_md": f"v1\n- {label}\n",
     }
 
@@ -71,6 +77,36 @@ def test_phase2_materializes_rollout_summary_only_after_model_output(
     ]
 
 
+def test_phase2_retries_once_after_truncated_response(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _add_stage1(store, "run_20260918_001", "focused-tests")
+
+    class TruncatingClient:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def call_request(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ModelResponse(
+                    final_text='{"memory_md":"# partial',
+                    stop_reason="max_tokens",
+                )
+            return ModelResponse(
+                final_text=json.dumps(_memory_output(), ensure_ascii=False)
+            )
+
+    client = TruncatingClient()
+    result = Phase2Consolidator(store, client).consolidate(now=NOW)
+
+    assert result.status == "completed"
+    assert len(client.requests) == 2
+    retry_payload = json.loads(client.requests[1].messages[0]["content"])
+    assert retry_payload["recovery"] == "previous_response_truncated"
+    assert store.memory_path.is_file()
+    assert store.summary_path.is_file()
+
+
 def test_phase2_init_runs_immediately_and_publishes_pending_delta(tmp_path: Path) -> None:
     store = _store(tmp_path)
     _add_stage1(store, "run_20260918_001", "focused-tests")
@@ -92,6 +128,10 @@ def test_phase2_init_runs_immediately_and_publishes_pending_delta(tmp_path: Path
     assert state.latest_stage1_seq == 1
     assert state.last_phase2_input_seq == 1
     assert state.last_phase2_success_at == NOW.isoformat()
+    compacted = store.load_stage1("run_20260918_001")
+    assert compacted.status == "consolidated"
+    assert compacted.raw_memory == ""
+    assert compacted.rollout_summary == ""
     request = client.requests[0]
     assert request.tools == []
     payload = json.loads(request.messages[0]["content"])
@@ -111,7 +151,9 @@ def test_incremental_phase2_respects_six_hour_cooldown(tmp_path: Path) -> None:
             last_phase2_success_at=(NOW - timedelta(hours=2)).isoformat(),
         )
     )
-    client = FakeModelClient([_memory_output()])
+    client = FakeModelClient([
+        _memory_output("first", "run_20260918_001--first.md")
+    ])
 
     result = Phase2Consolidator(store, client).consolidate(now=NOW)
 
@@ -119,6 +161,46 @@ def test_incremental_phase2_respects_six_hour_cooldown(tmp_path: Path) -> None:
     assert result.reason == "cooldown"
     assert client.requests == []
     assert store.load_state().last_phase2_input_seq == 0
+
+
+def test_incremental_phase2_uses_configured_cooldown(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.write_durable_memory("# Memory\nold\n", "v1\nold\n")
+    _add_stage1(store, "run_20260918_001", "new")
+    store.save_state(
+        MemoryPipelineState(
+            latest_stage1_seq=1,
+            last_phase2_input_seq=0,
+            last_phase2_success_at=(NOW - timedelta(hours=2)).isoformat(),
+        )
+    )
+    client = FakeModelClient([
+        _memory_output("new", "run_20260918_001--new.md")
+    ])
+
+    result = Phase2Consolidator(
+        store,
+        client,
+        cooldown=timedelta(minutes=30),
+    ).consolidate(now=NOW)
+
+    assert result.status == "completed"
+
+
+def test_phase2_rejects_memory_without_pending_rollout_provenance(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    _add_stage1(store, "run_20260918_001", "focused-tests")
+    client = FakeModelClient([
+        {
+            "memory_md": "# Durable Memory\n\n- focused\n",
+            "memory_summary_md": "v1\n- focused\n",
+        }
+    ])
+
+    with pytest.raises(ValueError, match="rollout provenance"):
+        Phase2Consolidator(store, client).consolidate(now=NOW)
 
 
 def test_incremental_phase2_runs_after_cooldown_and_uses_only_pending_records(
@@ -135,7 +217,9 @@ def test_incremental_phase2_runs_after_cooldown_and_uses_only_pending_records(
             last_phase2_success_at=(NOW - timedelta(hours=6)).isoformat(),
         )
     )
-    client = FakeModelClient([_memory_output("new")])
+    client = FakeModelClient([
+        _memory_output("new", "run_20260918_002--new.md")
+    ])
 
     result = Phase2Consolidator(store, client).consolidate(now=NOW)
 
@@ -150,6 +234,8 @@ def test_incremental_phase2_runs_after_cooldown_and_uses_only_pending_records(
     assert [item["run_id"] for item in payload["rollout_summaries"]] == [
         "run_20260918_002"
     ]
+    assert "preserve existing supported facts" in client.requests[0].system
+    assert "rollout_summaries/" in client.requests[0].system
 
 
 def test_explicit_consolidation_bypasses_cooldown_and_clean_state_is_noop(
@@ -165,7 +251,9 @@ def test_explicit_consolidation_bypasses_cooldown_and_clean_state_is_noop(
             last_phase2_success_at=NOW.isoformat(),
         )
     )
-    client = FakeModelClient([_memory_output("new")])
+    client = FakeModelClient([
+        _memory_output("new", "run_20260918_001--new.md")
+    ])
 
     completed = Phase2Consolidator(store, client).consolidate(
         explicit=True,
@@ -222,7 +310,9 @@ def test_rollout_summary_is_immutable_and_slug_cannot_escape_memory_root(
         rollout_summary="summary",
         rollout_slug="../../windows/git",
     )
-    client = FakeModelClient([_memory_output()])
+    client = FakeModelClient([
+        _memory_output("focused", "run_20260918_001--windows-git.md")
+    ])
 
     Phase2Consolidator(store, client).consolidate(now=NOW)
 
@@ -232,13 +322,11 @@ def test_rollout_summary_is_immutable_and_slug_cannot_escape_memory_root(
     assert summaries[0].name.startswith("run_20260918_001--")
     original = summaries[0].read_text(encoding="utf-8")
 
-    store.save_state(
-        store.load_state().model_copy(update={"last_phase2_input_seq": 0})
-    )
-    FakeModelClient2 = FakeModelClient([_memory_output("again")])
-    Phase2Consolidator(store, FakeModelClient2).consolidate(
-        explicit=True,
-        now=NOW + timedelta(hours=1),
-    )
+    with pytest.raises(ValueError, match="immutable"):
+        store.write_rollout_summary(
+            run_id="run_20260918_001",
+            rollout_slug="../../windows/git",
+            content="# changed\n",
+        )
 
     assert summaries[0].read_text(encoding="utf-8") == original

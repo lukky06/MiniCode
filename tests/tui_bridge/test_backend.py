@@ -95,6 +95,14 @@ def _backend(executor: BlockingExecutor):
     return backend, sink, stream
 
 
+def test_backend_parser_reads_memory_cooldown_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("MINICODE_TUI_MEMORY_PHASE2_COOLDOWN_MINUTES", "45")
+
+    args = _build_parser().parse_args([])
+
+    assert args.memory_phase2_cooldown_minutes == 45
+
+
 def test_backend_launch_session_preserves_new_continue_and_exact(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

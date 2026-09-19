@@ -21,7 +21,7 @@ class MemoryPipelineState(BaseModel):
 
 class Stage1Record(BaseModel):
     run_id: str = Field(min_length=1)
-    status: Literal["memory", "no_output"]
+    status: Literal["memory", "no_output", "consolidated"]
     updated_at: str = Field(default_factory=utc_now)
     seq: int | None = Field(default=None, ge=1)
     rollout_slug: str = ""
@@ -33,6 +33,12 @@ class Stage1Record(BaseModel):
         if self.status == "no_output":
             if self.seq is not None:
                 raise ValueError("no_output Stage-1 records must not have a sequence.")
+            return self
+        if self.status == "consolidated":
+            if self.seq is None:
+                raise ValueError("consolidated Stage-1 records require a sequence.")
+            if self.raw_memory or self.rollout_summary:
+                raise ValueError("consolidated Stage-1 records must not keep raw content.")
             return self
         if self.seq is None:
             raise ValueError("memory Stage-1 records require a sequence.")

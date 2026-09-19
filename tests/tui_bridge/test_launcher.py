@@ -60,6 +60,7 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
         skills=["reviewer", "handoff"],
         skills_enabled=True,
         repository_memory_enabled=False,
+        memory_phase2_cooldown_minutes=45,
         subagents_enabled=False,
         mcp_config=tmp_path / "mcp.json",
         session_mode="exact",
@@ -80,6 +81,7 @@ def test_environment_carries_runtime_options_without_stale_flags(tmp_path) -> No
     assert env["MINICODE_TUI_SKILLS"] == '["reviewer", "handoff"]'
     assert env["MINICODE_TUI_NO_WRITE"] == "1"
     assert env["MINICODE_TUI_NO_REPOSITORY_MEMORY"] == "1"
+    assert env["MINICODE_TUI_MEMORY_PHASE2_COOLDOWN_MINUTES"] == "45"
     assert env["MINICODE_TUI_NO_SUBAGENTS"] == "1"
     assert env["MINICODE_TUI_SESSION_MODE"] == "exact"
     assert env["MINICODE_TUI_SESSION_ID"] == "session_abc"
@@ -117,6 +119,7 @@ def test_launch_tui_runs_packaged_entrypoint_in_workspace(tmp_path, monkeypatch)
         skills=None,
         skills_enabled=True,
         repository_memory_enabled=True,
+        memory_phase2_cooldown_minutes=360,
         subagents_enabled=True,
         mcp_config=None,
         session_mode="new",

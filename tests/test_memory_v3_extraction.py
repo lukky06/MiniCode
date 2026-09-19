@@ -4,13 +4,15 @@ import json
 from pathlib import Path
 from threading import Event
 
+import pytest
+
 from minicode_harness.memory.extraction import (
     Phase1Extractor,
     filter_rollout_messages,
     run_pending_phase1,
 )
 from minicode_harness.memory.store import RepositoryMemoryStore
-from minicode_harness.models import ModelResponse
+from minicode_harness.models import ModelProviderError, ModelResponse
 from minicode_harness.state import CheckpointStore, RunCheckpoint, RunStore
 
 
@@ -133,8 +135,13 @@ def test_phase1_valid_output_writes_memory_record_with_tool_free_request(tmp_pat
     payload = json.loads(request.messages[0]["content"])
     assert payload["run_id"] == "run_20260918_001"
     assert payload["repository_id"] == memory.repository_id
+    assert payload["run_status"] == "completed"
+    assert payload["stop_reason"] is None
+    assert payload["verification"]["status"] == "not_run"
     assert payload["rollout"][0] == {"role": "user", "content": "Use focused tests."}
     assert payload["rollout"][2]["content"].startswith('{"returncode":0')
+    assert "stopped or cancelled" in request.system
+    assert "Never persist credentials" in request.system
 
 
 def test_phase1_empty_output_is_terminal_without_sequence(tmp_path: Path) -> None:
@@ -165,6 +172,24 @@ def test_phase1_failure_leaves_run_retryable(tmp_path: Path) -> None:
 
     assert memory.load_stage1("run_20260918_001") is None
     assert memory.load_state().latest_stage1_seq == 0
+
+
+def test_pending_phase1_can_include_just_finished_current_run(tmp_path: Path) -> None:
+    workspace, run_store, memory = _setup(tmp_path)
+    _terminal_run(run_store, workspace, "run_20260918_001", status="completed")
+    client = FakeModelClient(
+        [{"raw_memory": "", "rollout_summary": "", "rollout_slug": ""}]
+    )
+
+    result = run_pending_phase1(
+        store=memory,
+        run_store=run_store,
+        model_client=client,
+        current_run_id=None,
+    )
+
+    assert result.processed_run_ids == ["run_20260918_001"]
+    assert memory.load_stage1("run_20260918_001").status == "no_output"
 
 
 def test_pending_phase1_scans_only_earlier_terminal_top_level_runs(tmp_path: Path) -> None:
@@ -209,6 +234,47 @@ def test_pending_phase1_scans_only_earlier_terminal_top_level_runs(tmp_path: Pat
     assert memory.load_stage1("run_20260918_004") is None
     assert memory.load_stage1("run_20260918_005") is None
     assert memory.load_stage1("run_20260918_006") is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "message", "status_code"),
+    [
+        ("billing", "Insufficient Balance", 402),
+        ("authentication", "Invalid API key", 401),
+    ],
+)
+def test_pending_phase1_stops_immediately_on_provider_access_error(
+    tmp_path: Path,
+    kind: str,
+    message: str,
+    status_code: int,
+) -> None:
+    workspace, run_store, memory = _setup(tmp_path)
+    _terminal_run(run_store, workspace, "run_20260918_001")
+    _terminal_run(run_store, workspace, "run_20260918_002")
+    current = run_store.create_run(
+        task="current",
+        workspace=workspace,
+        run_id="run_20260918_003",
+    )
+    client = FakeModelClient(
+        [
+            ModelProviderError(message, kind=kind, status_code=status_code),
+            {"raw_memory": "", "rollout_summary": "", "rollout_slug": ""},
+        ]
+    )
+
+    with pytest.raises(ModelProviderError, match=message):
+        run_pending_phase1(
+            store=memory,
+            run_store=run_store,
+            model_client=client,
+            current_run_id=current.run_id,
+        )
+
+    assert len(client.requests) == 1
+    assert memory.load_stage1("run_20260918_001") is None
+    assert memory.load_stage1("run_20260918_002") is None
 
 
 def test_pending_phase1_continues_after_one_rollout_fails(tmp_path: Path) -> None:

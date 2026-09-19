@@ -49,9 +49,7 @@ def migrate_v2_topics(
             record = store.write_stage1_memory(
                 run_id=MIGRATION_RUN_ID,
                 raw_memory=_render_raw_memory(entries),
-                rollout_summary=(
-                    f"Migrated {len(entries)} active V2 repository memory entries."
-                ),
+                rollout_summary=_render_raw_memory(entries),
                 rollout_slug=MIGRATION_SLUG,
             )
         elif not store.state_path.is_file():
