@@ -30,11 +30,8 @@ class RunSnapshot:
     observations: list[ContextObservation]
     modified_files: list[str]
     workspace_digest_paths: list[str]
-    user_turn_id: str
-    model_call_count: int
     tool_calls: int
     memory_snapshot_hash: str | None
-    memory_snapshot_path: str | None
 
 
 class RunLifecycle:
@@ -90,15 +87,12 @@ class RunLifecycle:
             task_state=snapshot.task_state,
             recent_observations=snapshot.observations[-MAX_CHECKPOINT_OBSERVATIONS:],
             compaction_state=snapshot.compaction_state,
-            user_turn_id=snapshot.user_turn_id,
-            model_call_count=snapshot.model_call_count,
             modified_files=snapshot.modified_files,
             workspace_digest=digest_workspace_files(
                 self.workspace,
                 snapshot.workspace_digest_paths,
             ),
             memory_snapshot_hash=snapshot.memory_snapshot_hash,
-            memory_snapshot_path=snapshot.memory_snapshot_path,
             tool_calls=snapshot.tool_calls,
             status=status,
             reason=reason,
@@ -116,7 +110,6 @@ class RunLifecycle:
             modified_files=snapshot.modified_files,
             workspace_digest_paths=snapshot.workspace_digest_paths,
             memory_snapshot_hash=snapshot.memory_snapshot_hash,
-            memory_snapshot_path=snapshot.memory_snapshot_path,
         )
 
     def checkpoint_progress(

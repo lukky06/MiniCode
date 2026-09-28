@@ -477,11 +477,6 @@ class BenchmarkScenarioRunner:
                         if memory_snapshot is not None
                         else None
                     ),
-                    memory_snapshot_path=(
-                        MemorySnapshotStore(turn_output).checkpoint_path
-                        if memory_snapshot is not None
-                        else None
-                    ),
                     context_builder=context_builder,
                     context_preparer=context_preparer,
                     enable_write=True,

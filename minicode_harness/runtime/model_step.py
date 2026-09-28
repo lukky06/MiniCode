@@ -165,7 +165,7 @@ class ModelStepRunner:
             prepared.request.messages,
             observations=loop.observations,
             run_state=loop.run_state,
-            workspace_generation=loop.workspace_generation,
+            workspace_generation=loop.run_state.workspace_generation,
         )
         duration_ms = int((time.monotonic() - build_started) * 1000)
         loop.output_sink.context_built(

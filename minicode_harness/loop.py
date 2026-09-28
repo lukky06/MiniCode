@@ -70,7 +70,6 @@ from minicode_harness.runtime.model_step import ModelStepOutcome, ModelStepRunne
 from minicode_harness.runtime.run_lifecycle import RunSnapshot
 from minicode_harness.runtime.steering import SteeringQueue
 from minicode_harness.runtime.tool_batch import ToolBatchExecutor
-from minicode_harness.runtime.tool_reuse import coerce_optional_int
 from minicode_harness.runtime.tool_runtime import (
     MAX_TUI_DIFF_PREVIEW_CHARS,
     ToolExecutionOutcome,
@@ -145,7 +144,6 @@ class AgentLoop:
         data_dir: Path | str | None = None,
         repository_memory: RepositoryMemoryStore | None = None,
         memory_snapshot_hash: str | None = None,
-        memory_snapshot_path: str | None = None,
         enable_long_term_context: bool = True,
         long_term_context: str | None = None,
         context_builder: ContextBuilder | None = None,
@@ -203,7 +201,6 @@ class AgentLoop:
         )
         self.repository_memory = repository_memory
         self.memory_snapshot_hash = memory_snapshot_hash
-        self.memory_snapshot_path = memory_snapshot_path
         self.memory_snapshot_store = MemorySnapshotStore(
             self.trace_writer.trace_path.parent
         )
@@ -217,24 +214,6 @@ class AgentLoop:
         self.modified_files = list(initial_modified_files or [])
         self.run_state = initialize_run_state(initial_run_state)
         self.tool_call_count = initial_tool_calls
-        restored_generations = [
-            int(item.workspace_generation)
-            for item in self.run_state.inspected_files
-        ]
-        restored_generations.extend(
-            generation
-            for observation in self.observations
-            if (
-                generation := coerce_optional_int(
-                    observation.metadata.get("workspace_generation")
-                )
-            )
-            is not None
-        )
-        self.workspace_generation = max(
-            restored_generations,
-            default=1 if self.modified_files else 0,
-        )
         self._workspace_profile_cache: WorkspaceProfile | None = None
         self._repository_structure_card_cache: str | None = None
         restoring = initial_message_history is not None
@@ -320,7 +299,7 @@ class AgentLoop:
             initial_task_state=initial_task_state,
             initial_observations=self.observations,
             run_state=self.run_state,
-            workspace_generation=self.workspace_generation,
+            workspace_generation=self.run_state.workspace_generation,
             max_memory_topic_reads=self.config.max_memory_topic_reads,
             rollback_on_unfinished_stop=self.config.rollback_on_unfinished_stop,
             enable_subagents=self.config.enable_subagents,
@@ -686,7 +665,7 @@ class AgentLoop:
     def _record_modified_files(self, modified_files: list[str]) -> None:
         if not modified_files:
             return
-        self.workspace_generation += 1
+        self.run_state.workspace_generation += 1
         mark_verification_not_run(self.run_state)
         for path in modified_files:
             if path not in self.modified_files:
@@ -732,7 +711,7 @@ class AgentLoop:
         tool_call: NormalizedToolCall,
         outcome: ToolExecutionOutcome,
     ) -> None:
-        outcome.observation.metadata["workspace_generation"] = self.workspace_generation
+        outcome.observation.metadata["workspace_generation"] = self.run_state.workspace_generation
         record_inspected_file(
             state=self.run_state,
             tool_name=tool_call.name,
@@ -740,7 +719,7 @@ class AgentLoop:
             arguments=tool_call.arguments,
             observation=outcome.observation,
             step=step,
-            workspace_generation=self.workspace_generation,
+            workspace_generation=self.run_state.workspace_generation,
         )
         self.trace_writer.write_event(
             "run_state_updated",
@@ -858,11 +837,8 @@ class AgentLoop:
             observations=list(self.observations),
             modified_files=list(self.modified_files),
             workspace_digest_paths=digest_paths,
-            user_turn_id=self.user_turn.turn_id,
-            model_call_count=self.user_turn.model_call_count,
             tool_calls=self.tool_call_count,
             memory_snapshot_hash=self.memory_snapshot_hash,
-            memory_snapshot_path=self.memory_snapshot_path,
         )
 
     def _request_user_input(

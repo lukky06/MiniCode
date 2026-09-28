@@ -621,6 +621,7 @@ def test_resume_uses_latest_workspace_generation_after_write_without_reread(
     checkpoint_store = CheckpointStore(trace_path.parent / "checkpoints")
     checkpoint = checkpoint_store.load_latest()
     assert checkpoint is not None
+    assert checkpoint.run_state.workspace_generation == 2
     assert max(
         int(item.metadata.get("workspace_generation") or 0)
         for item in checkpoint.recent_observations
@@ -654,7 +655,7 @@ def test_resume_uses_latest_workspace_generation_after_write_without_reread(
 
     resumed_loop.run()
 
-    assert resumed_loop.workspace_generation == 2
+    assert resumed_loop.run_state.workspace_generation == 2
     assert calls == 1
     observation = next(
         item for item in resumed_loop.observations if item.tool_call_id == "read_after_resume"

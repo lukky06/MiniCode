@@ -340,7 +340,11 @@ def test_verification_state_updates_are_structured() -> None:
 
 def test_run_state_serialization_is_minimal() -> None:
     payload = json.loads(RunState().model_dump_json())
-    assert set(payload) == {"inspected_files", "verification"}
+    assert set(payload) == {
+        "workspace_generation",
+        "inspected_files",
+        "verification",
+    }
     assert payload["verification"] == {
         "status": "not_run",
         "command": None,

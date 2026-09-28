@@ -16,11 +16,8 @@ def _snapshot(*, workspace: str, messages: list[dict[str, object]]) -> RunSnapsh
         observations=[],
         modified_files=[],
         workspace_digest_paths=[],
-        user_turn_id="turn_1",
-        model_call_count=1,
         tool_calls=1,
         memory_snapshot_hash=None,
-        memory_snapshot_path=None,
     )
 
 

@@ -50,12 +50,9 @@ class RunCheckpoint(BaseModel):
     compaction_state: SessionCompactionState = Field(
         default_factory=SessionCompactionState
     )
-    user_turn_id: str | None = None
-    model_call_count: int = 0
     modified_files: list[str] = Field(default_factory=list)
     workspace_digest: dict[str, str | None] = Field(default_factory=dict)
     memory_snapshot_hash: str | None = None
-    memory_snapshot_path: str | None = None
     tool_calls: int = 0
     status: str = "running"
     reason: str | None = None

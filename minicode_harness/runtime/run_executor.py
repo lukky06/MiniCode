@@ -245,7 +245,6 @@ def build_agent_loop_from_session(
     trace_writer: TraceWriter,
     repository_memory: RepositoryMemoryStore | None,
     memory_snapshot_hash: str | None,
-    memory_snapshot_path: str | None,
     long_term_context: str,
     command_executor: Any,
     approval_client: ApprovalClient,
@@ -294,7 +293,6 @@ def build_agent_loop_from_session(
         data_dir=data_dir,
         repository_memory=repository_memory,
         memory_snapshot_hash=memory_snapshot_hash,
-        memory_snapshot_path=memory_snapshot_path,
         long_term_context=long_term_context,
         enable_write=not session.no_write,
         execution_mode=ExecutionMode(session.execution_mode),
@@ -672,11 +670,6 @@ class RunExecutor:
             trace_writer=trace_writer,
             repository_memory=repository_memory,
             memory_snapshot_hash=(memory_snapshot.index_hash if memory_snapshot else None),
-            memory_snapshot_path=(
-                MemorySnapshotStore(run_path).checkpoint_path
-                if memory_snapshot is not None
-                else None
-            ),
             long_term_context=long_term_context,
             command_executor=command_executor,
             approval_client=approval_client,

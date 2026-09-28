@@ -125,7 +125,7 @@ def test_tool_runtime_execute_uses_prepare_execute_finalize_phases(monkeypatch, 
         step=1,
         tool_call=tool_call,
         available_tool_names=("read",),
-        workspace_generation=loop.workspace_generation,
+        workspace_generation=loop.run_state.workspace_generation,
     )
 
     assert outcome is expected
@@ -374,7 +374,11 @@ def test_agent_loop_carries_native_tool_history_and_minimal_run_state(tmp_path) 
     payload = json.loads((trace_path.parent / "checkpoints" / "latest.json").read_text())
     assert "run_state" in payload
     assert "working_context" not in payload
-    assert set(payload["run_state"]) == {"inspected_files", "verification"}
+    assert set(payload["run_state"]) == {
+        "workspace_generation",
+        "inspected_files",
+        "verification",
+    }
     assert "task_memory" not in payload
     assert not (trace_path.parent / "artifacts" / "prompts").exists()
 
@@ -1445,7 +1449,8 @@ def test_agent_loop_does_not_soft_compact_semantic_only_history_without_summary(
     assert result.status == "completed"
     assert len(client.calls) == 1
     assert checkpoint is not None
-    assert checkpoint.model_call_count == 1
+    assert "model_call_count" not in checkpoint.model_dump()
+    assert "user_turn_id" not in checkpoint.model_dump()
     assert "llm_history_summary_calls" not in checkpoint.model_dump()
     assert not any(
         event.get("type") == "context_compressed"
@@ -1689,8 +1694,7 @@ def test_record_modified_files_keeps_workspace_profile_snapshot_stable(tmp_path,
 
     loop = AgentLoop.__new__(AgentLoop)
     loop.workspace = workspace
-    loop.workspace_generation = 0
-    loop.run_state = RunState()
+    loop.run_state = RunState(workspace_generation=0)
     loop.modified_files = []
     loop._workspace_profile_cache = cached_profile
     loop._repository_structure_card_cache = "cached-card"
@@ -1698,7 +1702,7 @@ def test_record_modified_files_keeps_workspace_profile_snapshot_stable(tmp_path,
 
     loop._record_modified_files([])
     assert scans == []
-    assert loop.workspace_generation == 0
+    assert loop.run_state.workspace_generation == 0
 
     loop._record_modified_files(["src/app.py"])
     assert scans == []

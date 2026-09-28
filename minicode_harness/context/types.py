@@ -85,6 +85,7 @@ class RunState(BaseModel):
     latest structured verification result.
     """
 
+    workspace_generation: int = 0
     inspected_files: list[InspectedFile] = Field(default_factory=list)
     verification: VerificationState = Field(default_factory=VerificationState)
 

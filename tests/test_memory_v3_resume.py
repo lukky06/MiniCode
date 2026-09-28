@@ -52,7 +52,6 @@ def test_resume_reuses_original_v3_memory_snapshot(
             workspace=session.workspace,
             status="stopped",
             memory_snapshot_hash=snapshot.index_hash,
-            memory_snapshot_path=snapshot_store.checkpoint_path,
         ),
         message_history=[],
     )
@@ -100,5 +99,6 @@ def test_resume_reuses_original_v3_memory_snapshot(
     assert result.status == "completed"
     assert captured["long_term_context"] == "v1\n- old summary\n"
     assert captured["memory_snapshot_hash"] == snapshot.index_hash
+    assert "memory_snapshot_path" not in captured
     assert snapshot_store.read_summary() == "v1\n- old summary\n"
     assert "NEW" not in snapshot_store.read_memory()

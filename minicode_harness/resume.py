@@ -216,7 +216,6 @@ def _reconcile_execution_journal_before_resume(
         task_state=checkpoint.task_state,
         tool_calls=tool_calls,
         memory_snapshot_hash=checkpoint.memory_snapshot_hash,
-        memory_snapshot_path=checkpoint.memory_snapshot_path,
         status="running",
         reason="execution_journal_reconciled",
     )
@@ -382,13 +381,7 @@ def resume_run(
     repository_memory = None
     memory_snapshot_store = MemorySnapshotStore(run_path)
     memory_snapshot = None
-    has_memory_snapshot = bool(
-        checkpoint
-        and (
-            checkpoint.memory_snapshot_hash
-            or checkpoint.memory_snapshot_path
-        )
-    )
+    has_memory_snapshot = bool(checkpoint and checkpoint.memory_snapshot_hash)
     if session.repository_memory_enabled and has_memory_snapshot:
         repository_memory = RepositoryMemoryStore(
             session.workspace,
@@ -450,9 +443,6 @@ def resume_run(
         trace_writer=trace_writer,
         repository_memory=repository_memory,
         memory_snapshot_hash=(memory_snapshot.index_hash if memory_snapshot else None),
-        memory_snapshot_path=(
-            memory_snapshot_store.checkpoint_path if memory_snapshot is not None else None
-        ),
         long_term_context=long_term_context,
         command_executor=command_executor,
         approval_client=approval_client,
@@ -581,7 +571,7 @@ def _restore_pending_approval_with_runtime(
         step=step,
         tool_call=tool_call,
         available_tool_names=tool_names,
-        workspace_generation=loop.workspace_generation,
+        workspace_generation=loop.run_state.workspace_generation,
     )
     guidance = loop.tool_batch.commit_outcome(
         loop,
@@ -714,7 +704,6 @@ def _checkpoint_for_resume(
     task_state: TaskListState,
     tool_calls: int,
     memory_snapshot_hash: str | None = None,
-    memory_snapshot_path: str | None = None,
     status: str,
     reason: str,
 ) -> RunCheckpoint:
@@ -733,7 +722,6 @@ def _checkpoint_for_resume(
             _checkpoint_digest_paths(modified_files, run_state),
         ),
         memory_snapshot_hash=memory_snapshot_hash,
-        memory_snapshot_path=memory_snapshot_path,
         tool_calls=tool_calls,
         status=status,
         reason=reason,

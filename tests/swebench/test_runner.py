@@ -354,7 +354,6 @@ def test_runner_resumes_checkpoint_without_readding_user_task(tmp_path: Path) ->
             step=1,
             task=task,
             workspace=str(instance_dir / "workspace"),
-            model_call_count=1,
             status="running",
             reason="interrupted",
         ),

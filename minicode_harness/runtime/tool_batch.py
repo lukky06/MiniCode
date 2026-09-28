@@ -84,7 +84,7 @@ class ToolBatchExecutor:
                     step=step,
                     tool_call=tool_call,
                     available_tool_names=tool_names,
-                    workspace_generation=loop.workspace_generation,
+                    workspace_generation=loop.run_state.workspace_generation,
                 )
             )
             guidance = self.commit_outcome(
@@ -180,7 +180,7 @@ class ToolBatchExecutor:
             tool_call=tool_call,
             outcome=outcome,
             run_state=loop.run_state,
-            workspace_generation=loop.workspace_generation,
+            workspace_generation=loop.run_state.workspace_generation,
             modified_files=loop.modified_files,
         )
         loop._record_run_state(step, tool_call, outcome)
@@ -206,7 +206,7 @@ class ToolBatchExecutor:
             count=len(tool_calls),
             tools=[tool_call.name for tool_call in tool_calls],
         )
-        workspace_generation = loop.workspace_generation
+        workspace_generation = loop.run_state.workspace_generation
         memory_read_admission = loop.tool_runtime.plan_memory_read_batch(tool_calls)
         outcomes: list[ToolExecutionOutcome | None] = [None] * len(tool_calls)
         admitted_indexes = [

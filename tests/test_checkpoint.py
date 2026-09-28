@@ -30,6 +30,7 @@ def _checkpoint(tmp_path) -> RunCheckpoint:
         task="Explain README",
         workspace=str(workspace),
         run_state=RunState(
+            workspace_generation=3,
             inspected_files=[
                 InspectedFile(
                     path="README.md",
@@ -68,8 +69,6 @@ def _checkpoint(tmp_path) -> RunCheckpoint:
                 summary="Read README.",
             )
         ],
-        user_turn_id="turn_1",
-        model_call_count=2,
         workspace_digest=digest_workspace_files(workspace, ["README.md"]),
         tool_calls=1,
     )
@@ -88,12 +87,14 @@ def test_checkpoint_store_saves_current_schema(tmp_path) -> None:
     assert [item.name for item in store.checkpoints_dir.iterdir()] == ["latest.json"]
     assert loaded is not None
     assert loaded.run_state.inspected_files[0].path == "README.md"
+    assert loaded.run_state.workspace_generation == 3
     assert loaded.run_state.verification.status == "passed"
     assert loaded.run_state.verification.returncode == 0
     assert loaded.task_state.tasks[0].id == "1"
     assert loaded.task_state.tasks[0].status == "in_progress"
-    assert loaded.user_turn_id == "turn_1"
-    assert loaded.model_call_count == 2
+    assert "user_turn_id" not in loaded.model_dump()
+    assert "model_call_count" not in loaded.model_dump()
+    assert "memory_snapshot_path" not in loaded.model_dump()
     assert loaded.history_length == 1
     assert store.load_history(loaded) == history
     assert "llm_history_summary_calls" not in loaded.model_dump()
@@ -108,7 +109,11 @@ def test_checkpoint_json_has_only_minimal_run_state(tmp_path) -> None:
     payload = json.loads(store.latest_path.read_text(encoding="utf-8"))
 
     assert "run_state" in payload
-    assert set(payload["run_state"]) == {"inspected_files", "verification"}
+    assert set(payload["run_state"]) == {
+        "workspace_generation",
+        "inspected_files",
+        "verification",
+    }
     assert "working_context" not in payload
     assert "progress_summary" not in payload["run_state"]
     assert "blockers" not in payload["run_state"]

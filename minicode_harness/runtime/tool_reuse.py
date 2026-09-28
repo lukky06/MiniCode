@@ -306,23 +306,7 @@ class ToolReuseTracker:
             )
             if generation != workspace_generation:
                 continue
-            status = str(observation.metadata.get("status") or "ok")
-            if observation_is_workspace_read(observation) and status == "ok":
-                path = normalize_workspace_path(observation.metadata.get("path"))
-                start = coerce_optional_int(observation.metadata.get("start_line"))
-                end = coerce_optional_int(observation.metadata.get("end_line"))
-                if path and start is not None and end is not None and end >= start:
-                    self._merge_read_coverage(
-                        path=path,
-                        start=start,
-                        end=end,
-                        total_lines=coerce_optional_int(
-                            observation.metadata.get("total_lines")
-                        ),
-                        source_tool_call_id=observation.tool_call_id,
-                        workspace_generation=generation,
-                    )
-            elif search_observation_reusable(observation):
+            if search_observation_reusable(observation):
                 arguments = observation.metadata.get("search_arguments")
                 if not isinstance(arguments, dict):
                     continue
@@ -374,13 +358,6 @@ def coerce_optional_int(value: Any) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-
-
-def observation_is_workspace_read(observation: ContextObservation) -> bool:
-    return (
-        observation.tool_name == "read"
-        and observation.metadata.get("read_source") == "workspace"
-    )
 
 
 def observation_is_text_search(observation: ContextObservation) -> bool:
