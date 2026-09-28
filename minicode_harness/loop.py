@@ -90,9 +90,7 @@ from minicode_harness.tools import CommandExecutor
 from minicode_harness.trace import TraceWriter
 from minicode_harness.workspace import (
     WorkspaceProfile,
-    preferred_verification_command_for_paths,
     scan_workspace_profile,
-    workspace_profile_may_change,
 )
 
 
@@ -239,15 +237,6 @@ class AgentLoop:
         )
         self._workspace_profile_cache: WorkspaceProfile | None = None
         self._repository_structure_card_cache: str | None = None
-        self.preferred_verification_command = (
-            preferred_verification_command_for_paths(
-                self.workspace,
-                self.modified_files,
-                profile=self._workspace_profile_snapshot(),
-            )
-            if self.modified_files
-            else None
-        )
         restoring = initial_message_history is not None
         prior_messages = (
             list(initial_message_history)
@@ -697,26 +686,11 @@ class AgentLoop:
     def _record_modified_files(self, modified_files: list[str]) -> None:
         if not modified_files:
             return
-        if workspace_profile_may_change(modified_files):
-            self._workspace_profile_cache = None
-            self._repository_structure_card_cache = None
         self.workspace_generation += 1
         mark_verification_not_run(self.run_state)
         for path in modified_files:
             if path not in self.modified_files:
                 self.modified_files.append(path)
-        preferred = preferred_verification_command_for_paths(
-            self.workspace,
-            modified_files,
-            profile=self._workspace_profile_snapshot(),
-        )
-        if preferred:
-            self.preferred_verification_command = preferred
-            self.trace_writer.write_event(
-                "preferred_verification_command_locked",
-                command=preferred,
-                modified_files=list(modified_files),
-            )
 
     def _advance_verification_state(
         self,

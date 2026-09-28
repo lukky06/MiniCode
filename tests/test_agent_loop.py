@@ -1664,7 +1664,7 @@ def test_agent_loop_stops_impossible_prompt_before_provider_call(tmp_path) -> No
     assert set(budget_events[0]["source_tokens"]) == {"system", "messages", "tools"}
 
 
-def test_record_modified_files_skips_and_reuses_workspace_profile(tmp_path, monkeypatch) -> None:
+def test_record_modified_files_keeps_workspace_profile_snapshot_stable(tmp_path, monkeypatch) -> None:
     from types import SimpleNamespace
 
     from minicode_harness.workspace import WorkspaceProfile
@@ -1674,12 +1674,10 @@ def test_record_modified_files_skips_and_reuses_workspace_profile(tmp_path, monk
     cached_profile = WorkspaceProfile(
         languages=["Python"],
         build_systems=["pyproject"],
-        preferred_verification_commands=["python -m pytest -q"],
     )
     refreshed_profile = WorkspaceProfile(
         languages=["Python"],
         build_systems=["pyproject"],
-        preferred_verification_commands=["python -m pytest -q"],
     )
     scans: list[str] = []
 
@@ -1694,7 +1692,6 @@ def test_record_modified_files_skips_and_reuses_workspace_profile(tmp_path, monk
     loop.workspace_generation = 0
     loop.run_state = RunState()
     loop.modified_files = []
-    loop.preferred_verification_command = None
     loop._workspace_profile_cache = cached_profile
     loop._repository_structure_card_cache = "cached-card"
     loop.trace_writer = SimpleNamespace(write_event=lambda *args, **kwargs: None)
@@ -1709,6 +1706,6 @@ def test_record_modified_files_skips_and_reuses_workspace_profile(tmp_path, monk
     assert loop._repository_structure_card_cache == "cached-card"
 
     loop._record_modified_files(["pyproject.toml"])
-    assert scans == [str(workspace)]
-    assert loop._workspace_profile_cache is refreshed_profile
-    assert loop._repository_structure_card_cache is None
+    assert scans == []
+    assert loop._workspace_profile_cache is cached_profile
+    assert loop._repository_structure_card_cache == "cached-card"

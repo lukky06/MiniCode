@@ -22,10 +22,6 @@ def render_repository_structure_card(
         _render_list("build_files", profile.build_files),
         _render_list("source_roots", profile.source_roots),
         _render_list("test_roots", profile.test_roots),
-        _render_list(
-            "preferred_verification_commands",
-            profile.preferred_verification_commands,
-        ),
     ]
     if len(profile.build_systems) > 1:
         sections.insert(0, _render_list("build_systems", profile.build_systems))

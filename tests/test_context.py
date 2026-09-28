@@ -223,6 +223,7 @@ def test_repository_structure_card_contains_only_high_density_hints(tmp_path) ->
     assert "workspace_root" not in card
     assert "primary_language" not in card
     assert "detected_languages" not in card
+    assert "preferred_verification_commands" not in card
     assert "generated_or_ignored_dirs" not in card
     assert ": none" not in card
 
