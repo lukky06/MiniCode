@@ -217,12 +217,21 @@ def test_resume_force_rebuild_context_ignores_digest_conflict(tmp_path) -> None:
         no_write=True,
     )
     run_path = run_store.path_for(session.run_id)
+    initial_generation = 3
     CheckpointStore(run_path / "checkpoints").save(
         RunCheckpoint(
             run_id=session.run_id,
             step=1,
             task=session.task,
             workspace=session.workspace,
+            run_state=RunState(
+                workspace_generation=initial_generation,
+                verification=VerificationState(
+                    status="passed",
+                    command="python -m pytest -q",
+                    returncode=0,
+                ),
+            ),
             modified_files=["README.md"],
             workspace_digest=digest_workspace_files(workspace, ["README.md"]),
             tool_calls=1,
@@ -240,6 +249,52 @@ def test_resume_force_rebuild_context_ignores_digest_conflict(tmp_path) -> None:
 
     assert result.status == "completed"
     assert result.final_text == "resumed"
+    latest = CheckpointStore(run_path / "checkpoints").load_latest()
+    assert latest is not None
+    assert latest.run_state.workspace_generation == initial_generation + 1
+    assert latest.run_state.verification.status == "not_run"
+
+
+def test_resume_rejects_explicit_completed_run_without_model_call(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    run_store = RunStore(tmp_path / "runs")
+    session = run_store.create_run(
+        task="already complete",
+        workspace=workspace,
+        run_id="run_20260701_098",
+        repository_memory_enabled=False,
+    )
+    run_path = run_store.path_for(session.run_id)
+    CheckpointStore(run_path / "checkpoints").save(
+        RunCheckpoint(
+            run_id=session.run_id,
+            step=1,
+            task=session.task,
+            workspace=session.workspace,
+            status="completed",
+        ),
+        message_history=[
+            {"role": "user", "content": session.task},
+            {"role": "assistant", "content": "done"},
+        ],
+    )
+    run_store.update_session_state(
+        session.run_id,
+        status="completed",
+        current_step=1,
+    )
+    client = ScriptedModelClient([ModelResponse(final_text="must not run")])
+
+    result = resume_run(
+        session.run_id,
+        run_store=run_store,
+        model_client=client,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason == "run_completed"
+    assert client.requests == []
 
 
 def test_resume_restores_persisted_command_sandbox(tmp_path, monkeypatch) -> None:

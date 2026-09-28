@@ -199,6 +199,7 @@ def _reconcile_execution_journal_before_resume(
         tool_calls += 1
         step = max(step, item.step)
         if item.resolution == "effect_applied" and item.effect_kind == "filesystem":
+            run_state.workspace_generation += 1
             for path in item.target_paths:
                 if path not in modified_files:
                     modified_files.append(path)
@@ -287,6 +288,19 @@ def resume_run(
     approval_store = ApprovalStore(run_path / "approvals")
     approval_client = approval_client or InteractiveApprovalClient()
     checkpoint = checkpoint_store.load_latest()
+    if session.status == "completed" or (
+        checkpoint is not None and checkpoint.status == "completed"
+    ):
+        trace_writer.write_event(
+            "resume_blocked",
+            run_id=run_id,
+            reason="run_completed",
+        )
+        return ResumeResult(
+            status="blocked",
+            run_id=run_id,
+            reason="run_completed",
+        )
     conversation_session = _load_conversation_session(
         session=session,
         session_store=session_store or ReplSessionStore(),
@@ -340,21 +354,24 @@ def resume_run(
             run_id=run_id,
         )
 
-    if checkpoint is not None and not force_rebuild_context:
-        conflicts = detect_workspace_conflicts(session.workspace, checkpoint)
-        if conflicts:
-            trace_writer.write_event(
-                "resume_blocked",
-                run_id=run_id,
-                reason="workspace_conflict",
-                conflicts=[conflict.model_dump() for conflict in conflicts],
-            )
-            return ResumeResult(
-                status="blocked",
-                run_id=run_id,
-                reason="workspace_conflict",
-                conflicts=[conflict.path for conflict in conflicts],
-            )
+    conflicts = (
+        detect_workspace_conflicts(session.workspace, checkpoint)
+        if checkpoint is not None
+        else []
+    )
+    if conflicts and not force_rebuild_context:
+        trace_writer.write_event(
+            "resume_blocked",
+            run_id=run_id,
+            reason="workspace_conflict",
+            conflicts=[conflict.model_dump() for conflict in conflicts],
+        )
+        return ResumeResult(
+            status="blocked",
+            run_id=run_id,
+            reason="workspace_conflict",
+            conflicts=[conflict.path for conflict in conflicts],
+        )
 
     observations = list(checkpoint.recent_observations if checkpoint else [])
     compaction_state = (
@@ -367,6 +384,28 @@ def resume_run(
     task_state = checkpoint.task_state if checkpoint else TaskListState()
     tool_calls = checkpoint.tool_calls if checkpoint else 0
     start_step = checkpoint.step if checkpoint else 0
+    if conflicts:
+        run_state.workspace_generation += 1
+        mark_verification_not_run(run_state)
+        conflict_paths = [conflict.path for conflict in conflicts]
+        message_history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[MiniCode runtime notification]\n"
+                    "Workspace files changed after the saved checkpoint: "
+                    + ", ".join(conflict_paths)
+                    + ". Prior read/search freshness was invalidated; re-inspect "
+                    "changed files before relying on earlier file evidence."
+                ),
+            }
+        )
+        trace_writer.write_event(
+            "workspace_conflicts_accepted",
+            run_id=run_id,
+            conflicts=conflict_paths,
+            workspace_generation=run_state.workspace_generation,
+        )
 
     pending = approval_store.load_pending()
 

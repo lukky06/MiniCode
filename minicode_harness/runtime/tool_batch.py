@@ -35,6 +35,7 @@ class ToolBatchExecutor:
             return loop._finish_cancelled_run(step=step)
 
         loop._append_assistant_tool_calls(response)
+        defer_checkpoint = len(response.tool_calls) > 1
         executable_tool_calls: list[NormalizedToolCall] = []
         skipped_tool_calls: list[NormalizedToolCall] = []
         budget_left = max(0, remaining)
@@ -93,11 +94,12 @@ class ToolBatchExecutor:
                 tool_call,
                 outcome,
                 emit_finished=parallel_tool_outcomes is None,
+                persist_checkpoint=not defer_checkpoint,
             )
             if guidance is not None:
                 pending_guidance.append(guidance)
             if outcome.stop_reason:
-                if parallel_tool_outcomes is None:
+                if not defer_checkpoint:
                     return loop._finish_stopped_run(
                         step=step,
                         reason=outcome.stop_reason,
@@ -107,7 +109,7 @@ class ToolBatchExecutor:
                 if batch_stop_reason is None:
                     batch_stop_reason = outcome.stop_reason
             if loop.cancellation_token.is_cancelled:
-                if parallel_tool_outcomes is None:
+                if not defer_checkpoint:
                     loop._append_cancelled_tool_results(
                         step,
                         executable_tool_calls[tool_index + 1 :] + skipped_tool_calls,
@@ -117,10 +119,11 @@ class ToolBatchExecutor:
 
         if skipped_tool_calls:
             loop._append_tool_budget_results(step, skipped_tool_calls)
-            loop._persist_and_checkpoint(
-                step,
-                reason="tool_budget_partial_group",
-            )
+            if not defer_checkpoint:
+                loop._persist_and_checkpoint(
+                    step,
+                    reason="tool_budget_partial_group",
+                )
 
         if batch_stop_reason is not None:
             return loop._finish_stopped_run(
@@ -148,6 +151,15 @@ class ToolBatchExecutor:
             )
         if pending_guidance:
             loop._persist_and_checkpoint(step, reason="progress_guidance")
+        elif defer_checkpoint:
+            loop._persist_and_checkpoint(
+                step,
+                reason=(
+                    "tool_budget_partial_group"
+                    if skipped_tool_calls
+                    else "tool_batch"
+                ),
+            )
         return None
 
     def commit_outcome(
@@ -158,6 +170,7 @@ class ToolBatchExecutor:
         outcome: ToolExecutionOutcome,
         *,
         emit_finished: bool = True,
+        persist_checkpoint: bool = True,
     ) -> ProgressGuidance | None:
         """Commit one completed ToolRuntime outcome into canonical Run state."""
 
@@ -184,11 +197,12 @@ class ToolBatchExecutor:
             modified_files=loop.modified_files,
         )
         loop._record_run_state(step, tool_call, outcome)
-        loop._persist_and_checkpoint(
-            step,
-            reason=outcome.stop_reason or f"tool:{tool_call.name}",
-            status="stopped" if outcome.stop_reason else "running",
-        )
+        if persist_checkpoint:
+            loop._persist_and_checkpoint(
+                step,
+                reason=outcome.stop_reason or f"tool:{tool_call.name}",
+                status="stopped" if outcome.stop_reason else "running",
+            )
         return guidance
 
     def _execute_parallel(

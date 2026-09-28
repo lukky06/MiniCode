@@ -368,6 +368,9 @@ def test_resume_reconciles_effect_after_prepared_before_completed(tmp_path) -> N
     assert (workspace / "README.md").read_bytes() == content.encode("utf-8")
     assert "already contains the effect" in str(client.calls[0])
     assert journal.load_events()[-1].resolution == "effect_applied"
+    latest = CheckpointStore(run_path / "checkpoints").load_latest()
+    assert latest is not None
+    assert latest.run_state.workspace_generation == 1
 
 
 def test_resume_reconciles_completed_before_checkpoint_without_replay(tmp_path) -> None:
@@ -408,6 +411,7 @@ def test_resume_reconciles_completed_before_checkpoint_without_replay(tmp_path) 
     latest = CheckpointStore(run_path / "checkpoints").load_latest()
     assert latest is not None
     assert "README.md" in latest.modified_files
+    assert latest.run_state.workspace_generation == 1
 
 
 def test_resume_blocks_unresolved_side_effect_without_model_call(tmp_path) -> None:

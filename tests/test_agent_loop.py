@@ -863,6 +863,70 @@ def test_agent_loop_pairs_partial_tool_group_at_budget_boundary(tmp_path) -> Non
     )
 
 
+def test_multi_tool_response_checkpoints_only_complete_protocol_group(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "first.txt").write_text("first\n", encoding="utf-8")
+    (workspace / "second.txt").write_text("second\n", encoding="utf-8")
+    trace_path = tmp_path / "batch-checkpoint" / "trace.jsonl"
+
+    class RecordingCheckpointStore(CheckpointStore):
+        def __init__(self, path):
+            super().__init__(path)
+            self.saved: list[tuple[str | None, list[dict[str, Any]]]] = []
+
+        def save(self, checkpoint, *, message_history=None):
+            if message_history is not None:
+                self.saved.append((checkpoint.reason, message_history))
+            return super().save(checkpoint, message_history=message_history)
+
+    checkpoint_store = RecordingCheckpointStore(trace_path.parent / "checkpoints")
+    client = ScriptedModelClient(
+        [
+            ModelResponse(
+                tool_calls=[
+                    NormalizedToolCall(
+                        id="first",
+                        name="read",
+                        arguments={"source": "workspace", "target": "first.txt"},
+                    ),
+                    NormalizedToolCall(
+                        id="second",
+                        name="read",
+                        arguments={"source": "workspace", "target": "second.txt"},
+                    ),
+                ]
+            ),
+            ModelResponse(final_text="done"),
+        ]
+    )
+
+    result = AgentLoop(
+        task="Read both files.",
+        workspace=workspace,
+        model_client=client,
+        trace_writer=TraceWriter(trace_path),
+        checkpoint_store=checkpoint_store,
+        memory_store=ProjectMemoryStore(tmp_path / "batch-checkpoint-memory"),
+        no_skills=True,
+    ).run()
+
+    assert result.status == "completed"
+    batch_saves = [
+        history for reason, history in checkpoint_store.saved if reason == "tool_batch"
+    ]
+    assert len(batch_saves) == 1
+    assert [message["role"] for message in batch_saves[0][-3:]] == [
+        "assistant",
+        "tool",
+        "tool",
+    ]
+    assert {
+        message["tool_call_id"]
+        for message in batch_saves[0][-2:]
+    } == {"first", "second"}
+
+
 def test_agent_loop_records_tool_error_and_continues(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
