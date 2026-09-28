@@ -116,6 +116,8 @@ def test_markdown_delta_renderer_renders_thematic_break_without_raw_markers() ->
         force_terminal=True,
         color_system="standard",
         width=60,
+        height=25,
+        legacy_windows=False,
     )
     renderer = MarkdownDeltaRenderer(console)
 
